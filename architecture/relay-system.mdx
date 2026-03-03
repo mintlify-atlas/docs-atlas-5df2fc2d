@@ -1,0 +1,235 @@
+---
+title: Relay system
+description: WebSocket connection management, subscriptions, and automatic reconnection logic in Hoot
+---
+
+Hoot's relay system manages WebSocket connections to Nostr relays, handling subscriptions, automatic reconnection, keepalive pings, and NIP-42 authentication.
+
+## Core components
+
+### RelayPool
+
+The `RelayPool` manages multiple relay connections and subscriptions across all relays:
+
+```rust
+pub struct RelayPool {
+    pub relays: HashMap<String, Relay>,
+    pub subscriptions: HashMap<String, Subscription>,
+    last_reconnect_attempt: Instant,
+    last_ping: Instant,
+    pending_auth_subscriptions: HashMap<String, Vec<String>>,
+}
+```
+
+Key responsibilities:
+- Maintain WebSocket connections to multiple relays
+- Track global subscriptions that apply to all relays
+- Coordinate reconnection and keepalive operations
+- Handle NIP-42 authentication state and retry logic
+
+### Relay
+
+Individual relay connection using the `ewebsock` library:
+
+```rust
+pub struct Relay {
+    pub url: String,
+    reader: ewebsock::WsReceiver,
+    writer: ewebsock::WsSender,
+    pub status: RelayStatus,
+    pub auth_state: RelayAuthState,
+}
+
+pub enum RelayStatus {
+    Connecting,
+    Connected,
+    Disconnected,
+}
+```
+
+Each relay maintains:
+- WebSocket reader/writer pair with wake-up callbacks for UI repaints
+- Connection status tracking
+- Authentication state (challenge and authenticated keys)
+
+From src/relay/mod.rs:37:
+```rust
+pub fn new_with_wakeup(
+    url: impl Into<String>,
+    wake_up: impl Fn() + Send + Sync + 'static,
+) -> Self {
+    let new_url: String = url.into();
+    let (sender, reciever) =
+        ewebsock::connect_with_wakeup(new_url.clone(), ewebsock::Options::default(), wake_up)
+            .unwrap();
+
+    let relay = Self {
+        url: new_url,
+        reader: reciever,
+        writer: sender,
+        status: RelayStatus::Connecting,
+        auth_state: RelayAuthState::default(),
+    };
+
+    relay
+}
+```
+
+### Subscription
+
+A subscription represents a Nostr filter set sent to relays:
+
+```rust
+pub struct Subscription {
+    pub id: String,
+    pub filters: Vec<Filter>,
+}
+```
+
+Subscriptions are:
+- Assigned random 7-character alphanumeric IDs by default
+- Stored in the RelayPool and sent to all connected relays
+- Automatically resubscribed when relays reconnect
+
+## Reconnection logic
+
+The `keepalive()` method runs periodically to maintain connections:
+
+```rust
+pub fn keepalive(&mut self, wake_up: impl Fn() + Send + Sync + Clone + 'static) {
+    let now = Instant::now();
+
+    // Check disconnected relays
+    if now.duration_since(self.last_reconnect_attempt)
+        >= Duration::from_secs(RELAY_RECONNECT_SECONDS)
+    {
+        for relay in self.relays.values_mut() {
+            if relay.status != RelayStatus::Connected {
+                relay.status = RelayStatus::Connecting;
+                relay.reconnect(wake_up.clone());
+            }
+        }
+        self.last_reconnect_attempt = now;
+    }
+
+    // Ping connected relays
+    if now.duration_since(self.last_ping) >= Duration::from_secs(30) {
+        for relay in self.relays.values_mut() {
+            if relay.status == RelayStatus::Connected {
+                relay.ping();
+            }
+        }
+        self.last_ping = now;
+    }
+}
+```
+
+From src/relay/pool.rs:11:
+- Reconnection attempts happen every `RELAY_RECONNECT_SECONDS` (5 seconds)
+- Keepalive pings sent every 30 seconds to maintain connections
+- When a relay reconnects, all subscriptions are automatically resubmitted
+
+## Message handling
+
+The relay system handles both inbound and outbound messages:
+
+### Outbound (ClientMessage)
+
+```rust
+pub enum ClientMessage {
+    Event { event: Event },
+    Req { subscription_id: String, filters: Vec<Filter> },
+    Close { subscription_id: String },
+    Auth { event: Event },
+}
+```
+
+### Inbound (RelayMessage)
+
+```rust
+pub enum RelayMessage<'a> {
+    Event(&'a str, &'a str),
+    OK(CommandResult<'a>),
+    Eose(&'a str),
+    Closed(&'a str, &'a str),
+    Notice(&'a str),
+    Auth(&'a str),
+}
+```
+
+The `try_recv()` method polls all relays for incoming messages:
+
+```rust
+pub fn try_recv(&mut self) -> Option<(String, String)> {
+    let relay_urls: Vec<String> = self.relays.keys().cloned().collect();
+    for relay_url in relay_urls {
+        if let Some(relay) = self.relays.get_mut(&relay_url) {
+            if let Some(event) = relay.try_recv() {
+                use WsEvent::*;
+                match event {
+                    Message(message) => {
+                        if let Some(msg_text) = self.handle_message(relay_url.clone(), message)
+                        {
+                            return Some((relay_url, msg_text));
+                        }
+                    }
+                    Opened => {
+                        // Resubscribe all subscriptions when connection opens
+                        for sub in self.subscriptions.clone() {
+                            // ... send subscription
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+```
+
+## NIP-42 authentication
+
+The relay system supports NIP-42 authentication for relays that require it:
+
+```rust
+pub struct RelayAuthState {
+    pub challenge: Option<String>,
+    pub authenticated_keys: HashSet<String>,
+}
+```
+
+Authentication flow:
+1. Relay sends `AUTH` challenge message
+2. Challenge stored in relay's `auth_state`
+3. Application creates auth event using `AccountManager::create_auth_event()`
+4. Auth event sent via `send_auth()` method
+5. Relay marks key as authenticated in `authenticated_keys` set
+6. Pending subscriptions that failed due to auth are retried
+
+From src/relay/pool.rs:221:
+```rust
+pub fn track_pending_auth_subscription(&mut self, relay_url: &str, subscription_id: &str) {
+    self.pending_auth_subscriptions
+        .entry(relay_url.to_string())
+        .or_default()
+        .push(subscription_id.to_string());
+}
+
+pub fn take_pending_auth_subscriptions(&mut self, relay_url: &str) -> Vec<String> {
+    self.pending_auth_subscriptions
+        .remove(relay_url)
+        .unwrap_or_default()
+}
+```
+
+## Event loop integration
+
+The relay pool integrates with the main application event loop:
+
+1. **Wake-up callbacks**: Each relay connection has a wake-up callback that triggers UI repaints when messages arrive
+2. **Non-blocking**: `try_recv()` polls for messages without blocking
+3. **Automatic resubscription**: When connections open, all subscriptions are resent
+4. **Status tracking**: Each relay maintains connection status for UI display
+
+The relay system is designed to be resilient, automatically handling disconnections, reconnections, and authentication without manual intervention.

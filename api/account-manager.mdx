@@ -1,0 +1,325 @@
+---
+title: AccountManager
+description: Manages Nostr keypairs, secure key storage, and gift-wrap encryption/decryption
+---
+
+The `AccountManager` struct handles all cryptographic key operations for Hoot, including key generation, secure storage using platform-specific keychains, and unwrapping gift-wrapped Nostr events.
+
+## Struct fields
+
+<ParamField path="loaded_keys" type="Vec<Keys>">
+  Vector of loaded Nostr keypairs currently available in memory
+</ParamField>
+
+## Methods
+
+### new()
+
+Creates a new `AccountManager` instance with no loaded keys.
+
+```rust
+pub fn new() -> Self
+```
+
+<ResponseField name="return" type="AccountManager">
+  A new AccountManager instance with an empty loaded_keys vector
+</ResponseField>
+
+### generate_new_keys_and_save()
+
+Generates a new Nostr keypair and saves it securely to the system keychain and database.
+
+```rust
+pub fn generate_new_keys_and_save(&mut self, db: &Db) -> Result<Keys>
+```
+
+<ParamField path="db" type="&Db" required>
+  Database instance for storing the public key reference
+</ParamField>
+
+<ResponseField name="return" type="Result<Keys>">
+  The newly generated Keys object if successful
+</ResponseField>
+
+#### Behavior
+
+1. Generates a new random Nostr keypair
+2. Saves the private key to the system keychain (platform-specific secure storage)
+3. Saves the public key to the database pubkeys table
+4. Adds the keys to the `loaded_keys` vector
+5. Returns the generated keys
+
+<Note>
+  Private keys are stored in:
+  - **macOS**: Keychain via Security Framework
+  - **Linux**: Secret Service API (or file-based fallback)
+  - **Windows**: Credential Manager
+</Note>
+
+### save_keys()
+
+Saves an existing keypair to secure storage and the database.
+
+```rust
+pub fn save_keys(&mut self, db: &Db, keys: &Keys) -> Result<()>
+```
+
+<ParamField path="db" type="&Db" required>
+  Database instance for storing the public key reference
+</ParamField>
+
+<ParamField path="keys" type="&Keys" required>
+  Nostr keypair to save
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if successful, or an error if storage fails
+</ResponseField>
+
+### load_keys()
+
+Loads all keypairs from the database and system keychain.
+
+```rust
+pub fn load_keys(&mut self, db: &Db) -> Result<Vec<Keys>>
+```
+
+<ParamField path="db" type="&Db" required>
+  Database instance to query for public keys
+</ParamField>
+
+<ResponseField name="return" type="Result<Vec<Keys>>">
+  Vector of successfully loaded Keys objects
+</ResponseField>
+
+#### Behavior
+
+1. Queries the database for all saved public keys
+2. For each public key, retrieves the corresponding private key from the system keychain
+3. Constructs Keys objects from the private keys
+4. Stores the loaded keys in the `loaded_keys` field
+5. Returns the vector of loaded keys
+
+<Warning>
+  If a private key cannot be retrieved from the keychain (e.g., due to permission issues), that key is skipped with an error log, and loading continues for remaining keys.
+</Warning>
+
+### delete_key()
+
+Removes a keypair from both the database and system keychain.
+
+```rust
+pub fn delete_key(&mut self, db: &Db, key: &Keys) -> Result<()>
+```
+
+<ParamField path="db" type="&Db" required>
+  Database instance for removing the public key reference
+</ParamField>
+
+<ParamField path="key" type="&Keys" required>
+  Keypair to delete
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if successful, or an error if deletion fails
+</ResponseField>
+
+#### Behavior
+
+1. Removes the public key from the database pubkeys table
+2. Deletes the private key from the system keychain
+3. Removes the keys from the `loaded_keys` vector in memory
+
+### unwrap_gift_wrap()
+
+Decrypts and unwraps a gift-wrapped Nostr event (NIP-59).
+
+```rust
+pub fn unwrap_gift_wrap(&mut self, gift_wrap: &Event) -> Result<UnwrappedGift>
+```
+
+<ParamField path="gift_wrap" type="&Event" required>
+  The gift-wrapped event (kind 1059) to unwrap
+</ParamField>
+
+<ResponseField name="return" type="Result<UnwrappedGift>">
+  The unwrapped gift containing the rumor (unsigned event) and sender information
+</ResponseField>
+
+#### Behavior
+
+1. Extracts the target public key from the gift wrap's p tag
+2. Searches `loaded_keys` for a matching keypair
+3. Uses the private key to decrypt the sealed event
+4. Unwraps the seal to reveal the rumor (the actual message content)
+5. Verifies that the seal signer matches the rumor's pubkey
+6. Returns the `UnwrappedGift` containing the rumor and sender
+
+<Warning>
+  This method will fail if:
+  - The gift wrap does not contain a p tag
+  - No loaded key matches the recipient public key
+  - The cryptographic unwrapping fails
+  - The seal signer doesn't match the rumor pubkey (security check)
+</Warning>
+
+### create_auth_event()
+
+Creates a signed authentication event (NIP-42) for relay authentication.
+
+```rust
+pub fn create_auth_event(keys: &Keys, relay_url: &str, challenge: &str) -> Result<Event>
+```
+
+<ParamField path="keys" type="&Keys" required>
+  Keypair to sign the authentication event with
+</ParamField>
+
+<ParamField path="relay_url" type="&str" required>
+  WebSocket URL of the relay requesting authentication
+</ParamField>
+
+<ParamField path="challenge" type="&str" required>
+  Challenge string provided by the relay in its AUTH message
+</ParamField>
+
+<ResponseField name="return" type="Result<Event>">
+  A signed authentication event (kind 22242) containing relay and challenge tags
+</ResponseField>
+
+<Note>
+  This is a static method that doesn't require a mutable AccountManager instance.
+</Note>
+
+### validate_nsec()
+
+Validates and parses a bech32-encoded Nostr private key (nsec).
+
+```rust
+pub fn validate_nsec(input: &str) -> Result<Keys, String>
+```
+
+<ParamField path="input" type="&str" required>
+  The nsec string to validate (e.g., "nsec1...")
+</ParamField>
+
+<ResponseField name="return" type="Result<Keys, String>">
+  A Keys object if valid, or an error message string if invalid
+</ResponseField>
+
+#### Return values
+
+- `Ok(Keys)` - Valid nsec, returns the parsed keypair
+- `Err("Please enter a private key")` - Empty input
+- `Err("Invalid nsec format")` - Invalid bech32 encoding or incorrect format
+
+<Note>
+  This is a standalone function, not a method on AccountManager.
+</Note>
+
+## Example usage
+
+### Setting up accounts on first run
+
+```rust
+use hoot::account_manager::AccountManager;
+use hoot::db::Db;
+
+let mut account_manager = AccountManager::new();
+let db = Db::new(db_path)?;
+
+// Generate and save a new keypair
+let keys = account_manager.generate_new_keys_and_save(&db)?;
+println!("New public key: {}", keys.public_key().to_hex());
+println!("New private key (nsec): {}", keys.secret_key().to_bech32()?);
+```
+
+### Loading existing accounts
+
+```rust
+let mut account_manager = AccountManager::new();
+let keys = account_manager.load_keys(&db)?;
+
+println!("Loaded {} account(s)", keys.len());
+for key in &keys {
+    println!("  - {}", key.public_key().to_hex());
+}
+```
+
+### Importing an existing key
+
+```rust
+use hoot::account_manager::validate_nsec;
+
+// Validate user input
+match validate_nsec(&user_input) {
+    Ok(keys) => {
+        // Save the imported keys
+        account_manager.save_keys(&db, &keys)?;
+        println!("Successfully imported key");
+    }
+    Err(e) => {
+        eprintln!("Invalid key: {}", e);
+    }
+}
+```
+
+### Unwrapping received messages
+
+```rust
+// Received a gift-wrapped event from a relay
+if event.kind == Kind::GiftWrap {
+    match account_manager.unwrap_gift_wrap(&event) {
+        Ok(unwrapped) => {
+            println!("From: {}", unwrapped.sender);
+            println!("Message ID: {}", unwrapped.rumor.id);
+            println!("Content: {}", unwrapped.rumor.content);
+            
+            // Store the unwrapped rumor in the database
+            db.store_event(&event, Some(&unwrapped), recipient_pubkey)?;
+        }
+        Err(e) => {
+            eprintln!("Failed to unwrap: {}", e);
+            // May not be for us, or we don't have the key
+        }
+    }
+}
+```
+
+### Authenticating with a relay (NIP-42)
+
+```rust
+let relay_url = "wss://relay.example.com";
+let challenge = "random-challenge-string";
+
+// Create auth event
+let auth_event = AccountManager::create_auth_event(
+    &keys,
+    relay_url,
+    &challenge
+)?;
+
+// Send to relay
+relay_pool.send_auth(relay_url, auth_event)?;
+```
+
+### Deleting an account
+
+```rust
+// Remove a keypair and all associated data
+account_manager.delete_key(&db, &keys_to_remove)?;
+println!("Account deleted from keychain and database");
+```
+
+## Security considerations
+
+- **Private keys never leave secure storage** except when in memory during active use
+- **Platform-specific keychains** provide OS-level encryption and access control
+- **Gift wrap verification** ensures the seal signer matches the rumor pubkey before accepting
+- **Automatic cleanup** removes keys from memory when AccountManager is dropped
+
+## Related
+
+- [MailMessage](/api/mail-message) - For creating gift-wrapped messages
+- [RelayPool](/api/relay-pool) - For authentication and message transmission
+- [Database](/api/database) - For storing public key references

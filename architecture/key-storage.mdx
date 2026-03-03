@@ -1,0 +1,331 @@
+---
+title: Key storage
+description: How Hoot securely stores private keys using platform-specific keychains
+---
+
+Hoot stores Nostr private keys using operating system keychains and credential managers. This ensures that private keys are protected by the OS and never stored in plain text on disk.
+
+## Platform-specific storage
+
+Hoot uses the `keyring` crate (v3.6.3) to provide a unified interface across different platforms:
+
+- **macOS**: Keychain via `apple-native` feature
+- **Windows**: Credential Manager via `windows-native` feature  
+- **Linux**: Secret Service API via `linux-native` feature
+
+The dependency is configured in `Cargo.toml`:
+
+```toml
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native"] }
+```
+
+### macOS Keychain
+
+On macOS, private keys are stored in the user's Keychain using the Security framework. Keys are:
+
+- Encrypted with the user's login password
+- Protected by macOS's Keychain Access security policies
+- Available to the Hoot application only
+- Synchronized across devices if iCloud Keychain is enabled (depending on Keychain settings)
+
+### Windows Credential Manager
+
+On Windows, private keys are stored in the Credential Manager using the Windows Credential API. Keys are:
+
+- Encrypted using DPAPI (Data Protection API)
+- Protected by the user's Windows login credentials
+- Isolated per-user account
+- Accessible via the Credential Manager UI
+
+### Linux Secret Service
+
+On Linux, private keys are stored using the Secret Service API, which is typically provided by GNOME Keyring or KDE Wallet. Keys are:
+
+- Encrypted with a user-provided password (if configured)
+- Stored in the user's keyring database
+- Protected by the desktop environment's security policies
+- Optionally unlocked automatically on login
+
+<Warning>
+On Linux systems without a Secret Service daemon running (e.g., headless servers), the keyring crate may fall back to alternative storage methods or fail. Ensure that GNOME Keyring, KDE Wallet, or a compatible Secret Service implementation is installed and running.
+</Warning>
+
+## Storage naming scheme
+
+Hoot uses a consistent naming scheme for all keyring entries:
+
+```rust
+// From src/main.rs:347
+#[cfg(debug_assertions)]
+pub const STORAGE_NAME: &'static str = "systems.chakany.hoot-dev";
+#[cfg(not(debug_assertions)]
+pub const STORAGE_NAME: &'static str = "systems.chakany.hoot";
+```
+
+Each keypair is stored as:
+- **Service**: `systems.chakany.hoot` (or `systems.chakany.hoot-dev` in debug builds)
+- **Account**: The public key in hexadecimal format
+- **Secret**: The private key as raw bytes (32 bytes)
+
+This allows multiple accounts to be stored independently while sharing the same service identifier.
+
+## Key management operations
+
+The `AccountManager` struct in `src/account_manager.rs` handles all key storage operations.
+
+### Generating and saving new keys
+
+When creating a new account, Hoot generates a fresh keypair and stores it:
+
+```rust
+// From src/account_manager.rs:64
+pub fn generate_new_keys_and_save(&mut self, db: &Db) -> Result<Keys> {
+    let new_keypair = Keys::generate();
+
+    // Store in OS keychain
+    let entry = Entry::new(STORAGE_NAME, new_keypair.public_key().to_hex().as_ref())?;
+    entry.set_secret(new_keypair.secret_key().as_secret_bytes())?;
+
+    // Store public key in database
+    db.add_pubkey(new_keypair.public_key().to_hex())?;
+
+    // Keep in memory for current session
+    self.loaded_keys.push(new_keypair.clone());
+
+    Ok(new_keypair)
+}
+```
+
+This process:
+1. Generates a random keypair using the `nostr` crate's `Keys::generate()` method
+2. Creates a keyring entry with the service name and public key
+3. Stores the private key bytes in the OS keychain
+4. Saves the public key to the SQLite database (the database stores only public keys, not private keys)
+5. Loads the keypair into memory for the current session
+
+### Importing existing keys
+
+Users can import existing keys from an nsec (bech32-encoded private key):
+
+```rust
+// From src/account_manager.rs:77
+pub fn save_keys(&mut self, db: &Db, keys: &Keys) -> Result<()> {
+    let entry = Entry::new(STORAGE_NAME, keys.public_key().to_hex().as_ref())?;
+    entry.set_secret(keys.secret_key().as_secret_bytes())?;
+
+    db.add_pubkey(keys.public_key().to_hex())?;
+
+    self.loaded_keys.push(keys.clone());
+
+    Ok(())
+}
+```
+
+The UI validates nsec input before saving:
+
+```rust
+// From src/account_manager.rs:11
+pub fn validate_nsec(input: &str) -> Result<Keys, String> {
+    if input.is_empty() {
+        return Err("Please enter a private key".to_string());
+    }
+    use nostr::FromBech32;
+    match nostr::SecretKey::from_bech32(input) {
+        Ok(secret_key) => Ok(Keys::new(secret_key)),
+        Err(_) => Err("Invalid nsec format".to_string()),
+    }
+}
+```
+
+### Loading keys at startup
+
+When Hoot starts, it loads all stored keypairs from the OS keychain:
+
+```rust
+// From src/account_manager.rs:88
+pub fn load_keys(&mut self, db: &Db) -> Result<Vec<Keys>> {
+    let db_saved_pubkeys = db.get_pubkeys()?;
+    let mut keypairs: Vec<Keys> = Vec::new();
+    
+    for pubkey in db_saved_pubkeys {
+        // Create keyring entry
+        let entry = match Entry::new(STORAGE_NAME, pubkey.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Couldn't create keyring entry struct, skipping: {}", e);
+                continue;
+            }
+        };
+        
+        // Retrieve private key from keychain
+        let privkey = match entry.get_secret() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Couldn't get private key from keystore, skipping: {}", e);
+                continue;
+            }
+        };
+
+        // Parse private key bytes
+        let parsed_sk = match SecretKey::from_slice(&privkey) {
+            Ok(key) => key,
+            Err(e) => {
+                error!("Couldn't parse private key from keystore, skipping: {}", e);
+                continue;
+            }
+        };
+        keypairs.push(Keys::new(parsed_sk));
+    }
+    
+    self.loaded_keys = keypairs.clone();
+    Ok(keypairs)
+}
+```
+
+This process:
+1. Retrieves the list of public keys from the database
+2. For each public key, creates a keyring entry
+3. Retrieves the private key bytes from the OS keychain
+4. Parses the bytes into a `SecretKey` object
+5. Constructs a `Keys` object containing both public and private keys
+6. Loads all keypairs into memory for the session
+
+<Note>
+If a keyring entry is missing or corrupted, Hoot logs an error and continues loading other keys. This ensures the application remains usable even if individual keys are lost.
+</Note>
+
+### Deleting keys
+
+Users can delete accounts, which removes both the keychain entry and database record:
+
+```rust
+// From src/account_manager.rs:121
+pub fn delete_key(&mut self, db: &Db, key: &Keys) -> Result<()> {
+    let pubkey = key.public_key().to_hex();
+    
+    // Delete from database
+    db.delete_pubkey(pubkey.clone()).with_context(|| {
+        format!("Tried to delete public key `{}` from pubkeys table", pubkey)
+    })?;
+    
+    // Delete from keychain
+    let entry = Entry::new(STORAGE_NAME, pubkey.as_ref()).with_context(|| {
+        format!(
+            "Couldn't create keyring entry struct for pubkey `{}`",
+            pubkey
+        )
+    })?;
+    entry.delete_credential().with_context(|| {
+        format!("Tried to delete keyring entry for public key `{}`", pubkey)
+    })?;
+
+    // Remove from memory
+    if let Some(index) = self
+        .loaded_keys
+        .iter()
+        .position(|saved_keys| saved_keys.public_key() == key.public_key())
+    {
+        self.loaded_keys.remove(index);
+    }
+
+    Ok(())
+}
+```
+
+<Warning>
+Deleting a key is permanent. The private key is removed from the OS keychain and cannot be recovered unless the user has backed it up elsewhere (e.g., saved the nsec string).
+</Warning>
+
+## Database vs keychain separation
+
+Hoot maintains a clear separation between public and private data:
+
+### SQLite database stores:
+- Public keys (hex format)
+- Received events (including gift-wrapped events)
+- Profile metadata
+- Message content (after decryption)
+- Contact lists
+- Application settings
+
+### OS keychain stores:
+- Private keys (raw 32-byte secrets)
+
+This design ensures that even if the SQLite database is compromised (e.g., copied by malware), private keys remain protected by the operating system's security mechanisms.
+
+## Security considerations
+
+### Key derivation
+
+Hoot does not currently implement hierarchical deterministic (HD) key derivation. Each account uses an independent random keypair. Users who want deterministic keys should generate them externally and import via nsec.
+
+### Memory security
+
+Private keys are held in memory during the application's runtime in the `AccountManager::loaded_keys` vector. While Rust's memory safety prevents many classes of vulnerabilities, the keys are not explicitly zeroed when dropped.
+
+<Note>
+For enhanced security in future versions, consider using a secure memory crate like `zeroize` to explicitly clear private key material from memory when no longer needed.
+</Note>
+
+### Backup and recovery
+
+Users should export and securely store their nsec keys for backup purposes. Hoot provides UI functionality to view and copy nsec strings, which can be saved in a password manager or written down in a secure location.
+
+The nsec format is a bech32-encoded representation:
+```
+nsec1<bech32-encoded-private-key>
+```
+
+### Multi-account support
+
+Hoot supports multiple accounts simultaneously. Each account:
+- Has its own keyring entry
+- Is loaded independently at startup
+- Can send and receive messages concurrently
+- Maintains separate contact lists and settings
+
+The `update_gift_wrap_subscription()` method ensures all loaded accounts receive their gift-wrapped messages by subscribing to events addressed to any of the public keys.
+
+## Testing considerations
+
+The test suite uses a mock keyring implementation to avoid polluting the OS keychain:
+
+```rust
+// From src/account_manager.rs:175
+static MOCK_STORE: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct SharedMockCredential {
+    key: String,
+}
+
+impl CredentialApi for SharedMockCredential {
+    fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+        MOCK_STORE
+            .lock()
+            .unwrap()
+            .insert(self.key.clone(), secret.to_vec());
+        Ok(())
+    }
+
+    fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+        MOCK_STORE
+            .lock()
+            .unwrap()
+            .get(&self.key)
+            .cloned()
+            .ok_or(keyring::Error::NoEntry)
+    }
+
+    fn delete_credential(&self) -> keyring::Result<()> {
+        MOCK_STORE
+            .lock()
+            .unwrap()
+            .remove(&self.key)
+            .map(|_| ())
+            .ok_or(keyring::Error::NoEntry)
+    }
+}
+```
+
+This allows tests to run without requiring OS keychain access, making them portable and preventing test pollution of the user's actual keychain.

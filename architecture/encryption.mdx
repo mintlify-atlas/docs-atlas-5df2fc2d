@@ -1,0 +1,264 @@
+---
+title: Encryption
+description: How Hoot encrypts and secures email messages using NIP-59 gift wrapping
+---
+
+Hoot uses NIP-59 gift wrapping to ensure complete privacy and metadata protection for all email messages. Each message is individually encrypted for every recipient, preventing relay operators and third parties from seeing who is communicating with whom.
+
+## NIP-59 gift wrapping overview
+
+NIP-59 defines a three-layer encryption scheme that protects both message content and metadata:
+
+1. **Rumor**: The actual mail event (kind 2024) containing the message content, subject, recipients, and threading information
+2. **Seal**: The rumor encrypted to the recipient using NIP-44 encryption and signed by the sender
+3. **Gift wrap**: The seal encrypted again and signed by a random ephemeral key to hide the sender's identity from relays
+
+This approach ensures that relay operators only see:
+- A gift wrap event (kind 1059) with a random public key as the author
+- A `p` tag indicating the intended recipient
+- A randomized timestamp
+- Encrypted content that can only be decrypted by the recipient
+
+<Note>
+NIP-59 provides stronger privacy guarantees than traditional NIP-04 encrypted DMs by hiding sender metadata and using modern encryption (NIP-44 instead of NIP-04).
+</Note>
+
+## Encryption flow
+
+When a user sends an email message, Hoot creates individual encrypted events for each recipient. This process is handled by the `MailMessage::to_events()` method in `src/mail_event.rs:24`.
+
+### Creating the base mail event
+
+First, Hoot constructs a kind 2024 event with all message metadata:
+
+```rust
+// Build tags for recipients
+for pubkey in &self.to {
+    tags.push(Tag::public_key(*pubkey));
+    pubkeys_to_send_to.push(*pubkey);
+}
+
+for pubkey in &self.cc {
+    tags.push(Tag::custom(
+        TagKind::p(),
+        vec![pubkey.to_hex().as_str(), "cc"],
+    ));
+    pubkeys_to_send_to.push(*pubkey);
+}
+
+// Add threading information
+if let Some(parentEvents) = &self.parent_events {
+    for event in parentEvents {
+        tags.push(Tag::event(*event));
+    }
+}
+
+// Add subject
+tags.push(Tag::from_standardized(TagStandard::Subject(
+    self.subject.clone(),
+)));
+
+let base_event = EventBuilder::new(
+    Kind::Custom(MAIL_EVENT_KIND),
+    &self.content
+).tags(tags);
+```
+
+### Individual encryption per recipient
+
+Hoot then creates a separate gift-wrapped event for each recipient:
+
+```rust
+let mut event_list: HashMap<PublicKey, Event> = HashMap::new();
+for pubkey in pubkeys_to_send_to {
+    let wrapped_event = EventBuilder::gift_wrap(
+        sending_keys,
+        &pubkey,
+        base_event.clone(),
+        None
+    ).block_on().unwrap();
+    event_list.insert(pubkey, wrapped_event);
+}
+```
+
+Each call to `EventBuilder::gift_wrap()` performs the three-layer encryption:
+
+1. Creates the rumor (unsigned kind 2024 event)
+2. Encrypts the rumor to the recipient and wraps it in a seal (kind 13)
+3. Encrypts the seal with a random ephemeral key and wraps it in a gift wrap (kind 1059)
+
+<Warning>
+BCC recipients are NOT included in the event tags to preserve privacy. Only the sender knows about BCC recipients, and each BCC recipient receives their own individually wrapped event without knowledge of other recipients.
+</Warning>
+
+### Sending wrapped events
+
+Each wrapped event is sent to all connected relays. Since each recipient gets a unique gift wrap with a different ephemeral key, relay operators cannot correlate events or determine that they came from the same sender.
+
+```rust
+// In RelayPool::send()
+for event in events {
+    for relay in &mut self.relays.values_mut() {
+        relay.send_event(event.clone());
+    }
+}
+```
+
+## Decryption flow
+
+When Hoot receives a gift-wrapped event from a relay, it performs the reverse process to extract and verify the message.
+
+### Gift wrap subscription
+
+Hoot subscribes to gift wraps addressed to any of its loaded accounts:
+
+```rust
+// From src/main.rs:431
+pub fn update_gift_wrap_subscription(&mut self) {
+    let public_keys: Vec<nostr::PublicKey> = self
+        .account_manager
+        .loaded_keys
+        .iter()
+        .map(|k| k.public_key())
+        .collect();
+
+    let filter = nostr::Filter::new()
+        .kind(nostr::Kind::GiftWrap)
+        .custom_tag(
+            nostr::SingleLetterTag {
+                character: nostr::Alphabet::P,
+                uppercase: false,
+            },
+            public_keys,
+        );
+
+    let mut gw_sub = relay::Subscription::default();
+    gw_sub.filter(filter);
+    self.relays.add_subscription(gw_sub);
+}
+```
+
+This filter requests all kind 1059 events with a `p` tag matching any of the user's public keys.
+
+### Unwrapping process
+
+When a gift wrap arrives, Hoot unwraps it using the recipient's private key:
+
+```rust
+// From src/account_manager.rs:33
+pub fn unwrap_gift_wrap(&mut self, gift_wrap: &Event) -> Result<UnwrappedGift> {
+    // Find the target public key from the p tag
+    let target_pubkey = gift_wrap
+        .tags
+        .iter()
+        .find(|tag| tag.kind() == "p".into())
+        .and_then(|tag| tag.content())
+        .with_context(|| {
+            format!(
+                "Could not find pubkey inside wrapped event `{}`",
+                gift_wrap.id
+            )
+        })?;
+
+    // Find the matching keypair
+    let target_key = self
+        .loaded_keys
+        .iter()
+        .find(|key| key.public_key().to_string() == *target_pubkey)
+        .with_context(|| {
+            format!(
+                "Could not find pubkey `{}` inside wrapped event `{}`",
+                target_pubkey, gift_wrap.id
+            )
+        })?;
+
+    // Unwrap the gift
+    let unwrapped = UnwrappedGift::from_gift_wrap(target_key, gift_wrap)
+        .block_on()
+        .context("Couldn't unwrap gift")?;
+
+    Ok(unwrapped)
+}
+```
+
+### Verification and storage
+
+After unwrapping, Hoot performs security checks before storing the message:
+
+```rust
+// From src/event_processing.rs:368
+match app.account_manager.unwrap_gift_wrap(&event) {
+    Ok(unwrapped) => {
+        // Verify seal signer matches rumor author
+        if unwrapped.sender != unwrapped.rumor.pubkey {
+            warn!("Gift wrap seal signer mismatch for event {}", event.id);
+            return;
+        }
+
+        // Ensure the rumor has a valid ID
+        let mut rumor = unwrapped.rumor.clone();
+        rumor.ensure_id();
+        if let Err(e) = rumor.verify_id() {
+            error!("Invalid rumor id for gift wrap {}: {}", event.id, e);
+            return;
+        }
+
+        // Store the unwrapped rumor and gift wrap mapping
+        app.db.store_event(&event, Some(&unwrapped), recipient.as_deref())?;
+    }
+    Err(e) => {
+        error!("Failed to unwrap gift wrap {}: {}", event.id, e);
+    }
+}
+```
+
+<Warning>
+Hoot validates that the seal's signer (sender) matches the rumor's author to prevent spoofing attacks. If this check fails, the event is rejected.
+</Warning>
+
+## Event verification
+
+All received events undergo cryptographic verification:
+
+```rust
+// From src/event_processing.rs:295
+if event.verify().is_err() {
+    error!("Event verification failed for event: {}", event.id);
+    return;
+}
+```
+
+This ensures:
+- The event ID is correctly calculated from the event content
+- The signature matches the claimed author's public key
+- The event hasn't been tampered with during transmission
+
+## Security considerations
+
+### Metadata protection
+
+Gift wrapping protects metadata in several ways:
+
+- **Sender anonymity**: The gift wrap is signed by a random ephemeral key, not the actual sender
+- **Timing obfuscation**: Gift wrap timestamps are randomized (though Hoot currently uses the same timestamp for all recipients)
+- **Recipient privacy**: Only the intended recipient can decrypt the seal to see the actual sender
+
+### Forward secrecy
+
+While NIP-44 encryption is secure, it does not provide forward secrecy. If a recipient's private key is compromised, all past messages encrypted to that key can be decrypted. Consider implementing key rotation for long-term security.
+
+### Relay trust
+
+Relays can:
+- See which public keys are receiving messages (from `p` tags)
+- Correlate timing of events
+- Perform traffic analysis
+
+Relays cannot:
+- Decrypt message contents
+- Determine who sent a message
+- Link gift wraps to the same sender
+
+<Note>
+For maximum privacy, use Tor or a VPN when connecting to Nostr relays to prevent IP address correlation with public keys.
+</Note>

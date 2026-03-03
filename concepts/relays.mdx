@@ -1,0 +1,282 @@
+---
+title: Relays
+description: Learn how Hoot connects to Nostr relays and manages subscriptions
+---
+
+Relays are the backbone of the Nostr network. They're WebSocket servers that store and forward events. Hoot connects to multiple relays simultaneously to ensure message delivery and availability.
+
+## RelayPool system
+
+Hoot uses a `RelayPool` to manage all relay connections in a single coordinated system. From `src/relay/pool.rs:13-20`:
+
+```rust
+pub struct RelayPool {
+    pub relays: HashMap<String, Relay>,
+    pub subscriptions: HashMap<String, Subscription>,
+    last_reconnect_attempt: Instant,
+    last_ping: Instant,
+    pending_auth_subscriptions: HashMap<String, Vec<String>>,
+}
+```
+
+The pool maintains:
+
+- **Active relay connections**: WebSocket connections to each relay URL
+- **Subscriptions**: Filters that tell relays what events to send
+- **Reconnection state**: Tracks when to retry failed connections
+- **Authentication state**: Manages auth challenges and authenticated keys
+
+## Adding relays
+
+Relays are added with a wake-up callback that triggers UI updates when messages arrive:
+
+```rust
+// From src/event_processing.rs:46-51
+let _ = app
+    .relays
+    .add_url("wss://relay.chakany.systems".to_string(), wake_up.clone());
+
+let _ = app
+    .relays
+    .add_url("wss://talon.quest".to_string(), wake_up.clone());
+```
+
+When a relay is added:
+
+1. A new WebSocket connection is created
+2. The connection attempts to open immediately
+3. On connection, all subscriptions are sent to the relay
+4. The relay starts forwarding matching events
+
+<Note>
+Hoot connects to multiple relays by default. This redundancy ensures messages are delivered even if some relays are offline.
+</Note>
+
+## Subscriptions
+
+Subscriptions tell relays which events you want to receive. They use filters to specify:
+
+- Event kinds (e.g., only gift wraps)
+- Authors (e.g., messages from specific contacts)
+- Tags (e.g., messages to your public key)
+- Time ranges
+
+From `src/relay/pool.rs:64-79`:
+
+```rust
+pub fn add_subscription(&mut self, sub: Subscription) -> Result<()> {
+    let cloned_sub = sub.clone();
+    self.subscriptions.insert(cloned_sub.id.clone(), cloned_sub);
+
+    let client_message = ClientMessage::Req {
+        subscription_id: sub.id,
+        filters: sub.filters,
+    };
+
+    let payload = serde_json::to_string(&client_message)?;
+    self.send(ewebsock::WsMessage::Text(payload))?;
+
+    Ok(())
+}
+```
+
+When you add a subscription:
+
+1. It's stored in the pool's subscription map
+2. A `REQ` message is sent to all connected relays
+3. Relays start sending matching events
+4. The subscription stays active until explicitly closed
+
+<Info>
+Subscriptions are automatically re-sent when a relay reconnects. You don't need to manually resubscribe after connection loss.
+</Info>
+
+## Reconnection logic
+
+Hoot automatically reconnects to relays that disconnect. From `src/relay/pool.rs:37-62`:
+
+```rust
+pub fn keepalive(&mut self, wake_up: impl Fn() + Send + Sync + Clone + 'static) {
+    let now = Instant::now();
+
+    // Check disconnected relays
+    if now.duration_since(self.last_reconnect_attempt)
+        >= Duration::from_secs(RELAY_RECONNECT_SECONDS)
+    {
+        for relay in self.relays.values_mut() {
+            if relay.status != RelayStatus::Connected {
+                relay.status = RelayStatus::Connecting;
+                relay.reconnect(wake_up.clone());
+            }
+        }
+        self.last_reconnect_attempt = now;
+    }
+
+    // Ping connected relays
+    if now.duration_since(self.last_ping) >= Duration::from_secs(30) {
+        for relay in self.relays.values_mut() {
+            if relay.status == RelayStatus::Connected {
+                relay.ping();
+            }
+        }
+        self.last_ping = now;
+    }
+}
+```
+
+The keepalive system:
+
+- **Checks every 5 seconds**: Attempts to reconnect disconnected relays
+- **Pings every 30 seconds**: Sends ping frames to detect stale connections
+- **Automatic resubscription**: Sends all subscriptions when a relay reconnects
+
+```rust
+// From src/relay/pool.rs:11
+pub const RELAY_RECONNECT_SECONDS: u64 = 5;
+```
+
+<Note>
+The 5-second reconnection interval is a balance between responsiveness and not overwhelming relays with connection attempts.
+</Note>
+
+## Connection lifecycle
+
+When a relay connection opens, Hoot automatically resubscribes to all active subscriptions. From `src/relay/pool.rs:109-133`:
+
+```rust
+Opened => {
+    for sub in self.subscriptions.clone() {
+        let client_message = ClientMessage::Req {
+            subscription_id: sub.1.id,
+            filters: sub.1.filters,
+        };
+
+        let payload = match serde_json::to_string(&client_message) {
+            Ok(p) => p,
+            Err(e) => {
+                error!("could not turn subscription into json: {}", e);
+                continue;
+            }
+        };
+
+        match relay.send(ewebsock::WsMessage::Text(payload)) {
+            Ok(_) => (),
+            Err(e) => {
+                error!("could not send subscription to {}: {:?}", relay.url, e)
+            }
+        };
+    }
+}
+```
+
+This ensures that after any disconnection:
+
+1. The relay reconnects
+2. All subscriptions are re-sent
+3. Events start flowing again
+4. No messages are missed (relays will send older events if needed)
+
+## Relay authentication
+
+Some relays require authentication (NIP-42) before accepting subscriptions or events. Hoot handles this automatically:
+
+### Auth challenge
+
+When a relay requires authentication, it sends an `AUTH` message with a challenge string. From `src/event_processing.rs:183-188`:
+
+```rust
+Auth(challenge) => {
+    debug!("Received AUTH challenge from {}: {}", relay_url, challenge);
+    if let Some(relay) = app.relays.relays.get_mut(relay_url) {
+        relay.auth_state.challenge = Some(challenge.to_string());
+    }
+}
+```
+
+### Auth response
+
+Hoot creates and sends auth events for all loaded keypairs. From `src/event_processing.rs:126-139`:
+
+```rust
+for keys in &app.account_manager.loaded_keys {
+    let pubkey = keys.public_key().to_hex();
+    if app.relays.is_key_authenticated(relay_url, &pubkey) {
+        continue;
+    }
+    match AccountManager::create_auth_event(keys, relay_url, &challenge) {
+        Ok(event) => {
+            if let Err(e) = app.relays.send_auth(relay_url, event) {
+                error!("Failed to send AUTH for {}: {}", pubkey, e);
+            } else {
+                app.relays.add_authenticated_key(relay_url, pubkey);
+            }
+        }
+    }
+}
+```
+
+<Info>
+Authentication is tracked per-key and per-relay. If you have multiple accounts, each one authenticates independently.
+</Info>
+
+### Subscription retry
+
+When a subscription is closed due to auth requirements, Hoot tracks it for retry. From `src/event_processing.rs:171-181`:
+
+```rust
+Closed(sub_id, msg) => {
+    if msg.starts_with("auth-required:") {
+        app.relays
+            .track_pending_auth_subscription(relay_url, sub_id);
+        perform_auth(app, relay_url);
+    }
+}
+```
+
+After successful authentication, pending subscriptions are automatically retried:
+
+```rust
+// From src/event_processing.rs:153-167
+let pending = app.relays.take_pending_auth_subscriptions(relay_url);
+if !pending.is_empty() {
+    for sub_id in pending {
+        if let Err(e) = app.relays.send_subscription_to_relay(relay_url, &sub_id) {
+            error!("Failed to retry subscription {}: {}", sub_id, e);
+        }
+    }
+}
+```
+
+This ensures that authentication requirements don't cause you to miss messages.
+
+## Message handling
+
+The relay pool's `try_recv()` method is called in the main event loop to process incoming messages. From `src/relay/pool.rs:96-143`:
+
+```rust
+pub fn try_recv(&mut self) -> Option<(String, String)> {
+    let relay_urls: Vec<String> = self.relays.keys().cloned().collect();
+    for relay_url in relay_urls {
+        if let Some(relay) = self.relays.get_mut(&relay_url) {
+            if let Some(event) = relay.try_recv() {
+                match event {
+                    Message(message) => {
+                        if let Some(msg_text) = self.handle_message(relay_url.clone(), message) {
+                            return Some((relay_url, msg_text));
+                        }
+                    }
+                    // ... handle other event types
+                }
+            }
+        }
+    }
+    None
+}
+```
+
+This non-blocking design allows Hoot to:
+
+- Process messages from all relays
+- Keep the UI responsive
+- Handle multiple connections efficiently
+- React to connection state changes

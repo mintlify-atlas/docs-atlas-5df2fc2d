@@ -1,0 +1,205 @@
+---
+title: Profiling and performance
+description: Learn how to profile Hoot using the built-in puffin profiler integration
+---
+
+## Overview
+
+Hoot includes optional profiling support using the [puffin](https://github.com/EmbarkStudios/puffin) profiler. When enabled, this feature allows you to analyze application performance, identify bottlenecks, and optimize rendering and event processing.
+
+## Building with profiling enabled
+
+The profiling feature is controlled by a Cargo feature flag. To build Hoot with profiling support:
+
+```bash
+cargo build --features profiling
+```
+
+For development with automatic rebuilds and profiling:
+
+```bash
+cargo run --features profiling
+```
+
+Alternatively, you can use the provided Makefile shortcut:
+
+```bash
+make dev
+```
+
+This runs `RUST_BACKTRACE=1 cargo run --features profiling` for development with full backtraces and profiling enabled.
+
+## How profiling works
+
+When the `profiling` feature is enabled, Hoot automatically:
+
+1. **Starts a puffin HTTP server** on `127.0.0.1:8585`
+2. **Attempts to launch puffin_viewer** to visualize the profiling data
+3. **Collects performance data** throughout the application lifecycle
+
+### Architecture details
+
+The profiling system is configured in `src/main.rs`:
+
+```rust
+#[cfg(feature = "profiling")]
+fn start_puffin_server() {
+    puffin::set_scopes_on(true); // tell puffin to collect data
+
+    match puffin_http::Server::new("127.0.0.1:8585") {
+        Ok(puffin_server) => {
+            debug!("Run: cargo install puffin_viewer && puffin_viewer --url 127.0.0.1:8585");
+
+            std::process::Command::new("puffin_viewer")
+                .arg("--url")
+                .arg("127.0.0.1:8585")
+                .spawn()
+                .ok();
+
+            // Keep the server running by not dropping it
+            #[allow(clippy::mem_forget)]
+            std::mem::forget(puffin_server);
+        }
+        Err(err) => {
+            error!("Failed to start puffin server: {}", err);
+        }
+    };
+}
+```
+
+The server remains active for the entire application lifetime, continuously serving profiling data.
+
+## Setting up the puffin viewer
+
+<Steps>
+  <Step title="Install puffin_viewer">
+    The puffin viewer is a separate tool that connects to the profiling server:
+    
+    ```bash
+    cargo install puffin_viewer
+    ```
+  </Step>
+
+  <Step title="Run Hoot with profiling">
+    Start Hoot with the profiling feature enabled:
+    
+    ```bash
+    cargo run --features profiling
+    ```
+    
+    Hoot will automatically attempt to launch the puffin viewer.
+  </Step>
+
+  <Step title="Connect manually (if needed)">
+    If the viewer doesn't launch automatically, you can start it manually:
+    
+    ```bash
+    puffin_viewer --url 127.0.0.1:8585
+    ```
+  </Step>
+</Steps>
+
+## Using the profiler
+
+### Viewing performance data
+
+Once connected, the puffin viewer displays:
+
+- **Frame timings** - Time spent rendering each frame
+- **Scope hierarchies** - Nested performance scopes showing where time is spent
+- **Flame graphs** - Visual representation of execution time
+- **Statistics** - Min, max, and average times for profiled operations
+
+### Key areas to profile
+
+In Hoot, pay attention to:
+
+1. **UI rendering** (`render_app()` and component render functions)
+2. **Event processing** (`update_app()` and relay message handling)
+3. **Database operations** (event storage and queries)
+4. **Gift wrap encryption/decryption** (message privacy operations)
+5. **WebSocket communication** (relay connection handling)
+
+## Performance optimization tips
+
+### Immediate mode UI considerations
+
+Hoot uses egui, an immediate-mode GUI framework. Common optimization strategies:
+
+- Avoid expensive operations in render functions
+- Cache computed data when possible
+- Use `ui.ctx().request_repaint()` sparingly
+- Profile with realistic data sets (many messages, contacts, etc.)
+
+### Database optimization
+
+The SQLite database uses generated virtual columns for efficient querying:
+
+- Profile queries with realistic event counts
+- Check if indexes are being used effectively
+- Monitor transaction patterns
+
+### Network and async operations
+
+While relay operations use `ewebsock` with callbacks:
+
+- Profile the wake-up callback frequency
+- Monitor message processing backlog
+- Check gift wrap decryption performance
+
+## Profiling in CI/CD
+
+<Note>
+The profiling feature adds dependencies (`puffin` and `puffin_http`) that are only needed during development. It should **not** be enabled in release builds or CI/CD pipelines.
+</Note>
+
+The CI workflow builds without the profiling feature:
+
+```yaml
+- name: Build
+  run: cargo build --verbose
+```
+
+## Dependencies
+
+The profiling feature adds the following optional dependencies in `Cargo.toml`:
+
+```toml
+[features]
+profiling = [
+    "dep:puffin",
+    "dep:puffin_http",
+]
+
+[dependencies]
+puffin = { version = "0.19.0", optional = true }
+puffin_http = { version = "0.16.0", optional = true }
+```
+
+These are only included when the feature is explicitly enabled.
+
+## Troubleshooting
+
+### Server fails to start
+
+If the puffin server fails to start:
+
+1. Check if port 8585 is already in use
+2. Verify firewall settings allow localhost connections
+3. Check application logs for error messages
+
+### Viewer can't connect
+
+If the viewer can't connect to the server:
+
+1. Ensure Hoot is running with `--features profiling`
+2. Verify the viewer is connecting to `127.0.0.1:8585`
+3. Check that the puffin server started successfully (check logs)
+
+### No profiling data visible
+
+If the viewer connects but shows no data:
+
+1. Verify `puffin::set_scopes_on(true)` is being called
+2. Check that profiling scopes are added to the code you're measuring
+3. Ensure the application is actively running and processing events

@@ -1,0 +1,132 @@
+---
+title: Encryption
+description: Understand how Hoot encrypts messages using NIP-59 gift wrapping
+---
+
+All messages in Hoot are encrypted using NIP-59 gift wrapping, a sophisticated encryption scheme that provides forward secrecy and hides metadata about who is communicating.
+
+## NIP-59 gift wrapping
+
+NIP-59 (Nostr Implementation Possibility 59) is a privacy-preserving encryption standard that wraps messages in multiple layers of encryption. Unlike simple end-to-end encryption, gift wrapping:
+
+- **Hides sender and recipient**: Relays only see encrypted envelopes
+- **Provides forward secrecy**: Uses ephemeral keys that can't be reused
+- **Protects metadata**: Timestamps and other details are obscured
+
+The process involves two layers:
+
+1. **Seal**: Inner layer encrypted to the recipient
+2. **Gift wrap**: Outer layer (kind 1059) with randomized metadata
+
+<Info>
+Gift wrapping is the default for all Hoot messages. You don't need to enable it—every message you send is automatically encrypted.
+</Info>
+
+## How messages are encrypted
+
+When you send a message in Hoot, the encryption happens in multiple steps:
+
+### Step 1: Create the mail event
+
+First, Hoot creates a kind 2024 event with your message content, recipients, and subject. This event is called a "rumor" because it doesn't have a signature yet.
+
+### Step 2: Wrap per recipient
+
+**Each recipient gets their own encrypted copy**. From `src/mail_event.rs:59-68`:
+
+```rust
+let mut event_list: HashMap<PublicKey, Event> = HashMap::new();
+for pubkey in pubkeys_to_send_to {
+    let wrapped_event =
+        EventBuilder::gift_wrap(sending_keys, &pubkey, base_event.clone(), None)
+            .block_on()
+            .unwrap();
+    event_list.insert(pubkey, wrapped_event);
+}
+```
+
+<Note>
+If you send a message to 5 people, Hoot creates 5 separate gift-wrapped events—one encrypted for each recipient. This ensures that relays can't determine who else received the message.
+</Note>
+
+### Step 3: Send to relays
+
+Each encrypted event is sent to all connected relays. The relays only see:
+
+- A kind 1059 event (gift wrap)
+- A recipient public key tag
+- Random timestamp (obscured for privacy)
+- Encrypted payload
+
+Relays cannot read the message content, subject, or sender information.
+
+## Receiving encrypted messages
+
+When Hoot receives a kind 1059 event from a relay, it attempts to decrypt it:
+
+### Unwrapping process
+
+From `src/event_processing.rs:368-394`:
+
+```rust
+match app.account_manager.unwrap_gift_wrap(&event) {
+    Ok(unwrapped) => {
+        if unwrapped.sender != unwrapped.rumor.pubkey {
+            warn!("Gift wrap seal signer mismatch for event {}", event.id);
+            return;
+        }
+
+        let mut rumor = unwrapped.rumor.clone();
+        rumor.ensure_id();
+        if let Err(e) = rumor.verify_id() {
+            error!("Invalid rumor id for gift wrap {}: {}", event.id, e);
+            return;
+        }
+        // ... store the unwrapped event
+    }
+}
+```
+
+The unwrapping process:
+
+1. **Checks recipient**: Verifies you have the private key to decrypt
+2. **Decrypts seal**: Extracts the inner sealed event
+3. **Validates sender**: Ensures the seal was created by the claimed sender
+4. **Verifies rumor ID**: Confirms the inner event is valid
+5. **Stores rumor**: Saves the decrypted mail event to the database
+
+<Info>
+Hoot stores the decrypted rumor (kind 2024 event) in the database, not the encrypted gift wrap. This allows for efficient searching and threading while maintaining privacy.
+</Info>
+
+## Gift wrap storage
+
+While the decrypted content is stored for display, Hoot also maintains a mapping between:
+
+- The gift wrap event ID (encrypted envelope)
+- The inner rumor event ID (decrypted message)
+- The recipient who received this copy
+
+This mapping is important for:
+
+- **Deletion requests**: When a sender deletes a message, Hoot can identify which gift wraps to mark as deleted
+- **Multi-device sync**: Different devices may receive different encrypted copies
+- **Privacy protection**: Ensures gift wraps aren't unnecessarily decrypted multiple times
+
+## Multiple accounts
+
+Hoot supports multiple keypairs in the same application. From `CLAUDE.md:49`:
+
+> `AccountManager` coordinates key loading, generation, and gift-wrap decryption
+
+When a gift-wrapped event arrives, Hoot tries to decrypt it with all loaded keys. If any key successfully decrypts the message, it's stored and displayed in the inbox.
+
+This allows you to:
+
+- Check multiple email identities in one app
+- Receive messages sent to any of your public keys
+- Switch between accounts without losing messages
+
+<Note>
+Each account's private keys are stored securely using platform-specific key storage (Keychain on macOS, Secret Service on Linux, Credential Manager on Windows).
+</Note>

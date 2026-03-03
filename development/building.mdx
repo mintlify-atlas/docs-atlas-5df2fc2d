@@ -1,0 +1,160 @@
+---
+title: Building from source
+description: Learn how to build Hoot from source code using Cargo or Nix
+---
+
+## Prerequisites
+
+Before building Hoot, ensure you have the following dependencies installed:
+
+- Rust 1.70 or later
+- OpenSSL development libraries
+- Perl and some libraries (required for OpenSSL compilation)
+
+### Platform-specific dependencies
+
+<Tabs>
+  <Tab title="Linux">
+    On Linux, you'll also need the following libraries:
+    - Wayland development libraries
+    - libxkbcommon
+    - libGL
+    - X11 development libraries (libX11, libXcursor, libXrandr, libXi)
+    - fontconfig
+  </Tab>
+  <Tab title="macOS">
+    On macOS, you'll need:
+    - Xcode Command Line Tools
+    - Apple SDK 15 (automatically handled by the build system)
+  </Tab>
+  <Tab title="Windows">
+    On Windows, you'll need:
+    - Visual Studio Build Tools or MinGW-w64
+    - Windows SDK
+  </Tab>
+</Tabs>
+
+## Building with Cargo
+
+Hoot uses standard Cargo build commands for compilation.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone <repository-url>
+    cd hoot
+    ```
+  </Step>
+
+  <Step title="Build the project">
+    <CodeGroup>
+      ```bash Development build
+      cargo build
+      ```
+
+      ```bash Release build
+      cargo build --release
+      ```
+    </CodeGroup>
+
+    The release build is optimized for performance and should be used for production use.
+  </Step>
+
+  <Step title="Run the application">
+    <CodeGroup>
+      ```bash Development
+      cargo run
+      ```
+
+      ```bash Release
+      cargo run --release
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Building with Nix
+
+If you have Nix with flakes enabled, you can use the provided Nix development environment.
+
+<Steps>
+  <Step title="Enter the development shell">
+    ```bash
+    nix develop
+    ```
+
+    This will set up a shell with all necessary dependencies, including:
+    - Rust toolchain with rust-analyzer and rust-src
+    - Platform-specific libraries
+    - Build tools (pkg-config, perl, makeWrapper)
+  </Step>
+
+  <Step title="Build using Cargo">
+    Once inside the Nix shell, use standard Cargo commands:
+    
+    ```bash
+    cargo build --release
+    ```
+  </Step>
+
+  <Step title="Run the application (alternative)">
+    You can also run Hoot directly using Nix:
+    
+    ```bash
+    nix run
+    ```
+  </Step>
+</Steps>
+
+### Nix packages
+
+The flake provides several package outputs:
+
+- `default` - The main Hoot package (wrapped with nixGL on Linux)
+- `hoot-unwrapped` - Hoot without nixGL wrapper
+- `devenv-up` - Development environment setup script
+- `devenv-test` - Test runner script
+
+## Build features
+
+Hoot supports optional feature flags during compilation:
+
+### Profiling
+
+Build with profiling support enabled:
+
+```bash
+cargo build --features profiling
+```
+
+See the [profiling guide](/development/profiling) for more information on using the profiler.
+
+## Troubleshooting
+
+### OpenSSL errors
+
+If you encounter OpenSSL-related build errors, ensure you have the OpenSSL development libraries installed:
+
+<CodeGroup>
+  ```bash Ubuntu/Debian
+  sudo apt-get install libssl-dev pkg-config
+  ```
+
+  ```bash Fedora/RHEL
+  sudo dnf install openssl-devel pkg-config
+  ```
+
+  ```bash macOS
+  brew install openssl pkg-config
+  ```
+</CodeGroup>
+
+### Graphics library errors on Linux
+
+If you encounter errors related to Wayland or X11 libraries:
+
+```bash Ubuntu/Debian
+sudo apt-get install libwayland-dev libxkbcommon-dev \
+  libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+  libgl1-mesa-dev fontconfig
+```

@@ -1,0 +1,340 @@
+---
+title: Settings
+description: Configure your Hoot profile, relays, and application preferences
+---
+
+The Settings page allows you to customize Hoot's behavior, manage your Nostr profiles, configure relay connections, and verify your identity.
+
+## Your profiles
+
+The Profiles section displays all Nostr accounts you've added to Hoot.
+
+### Viewing account information
+
+For each account, you can view:
+
+- **Key ID**: Your public key in npub format (e.g., `npub1...`)
+- **Display name**: Your profile's display name
+- **NIP-05 identifiers**: Email-like addresses associated with your key
+
+### Managing multiple accounts
+
+Hoot supports multiple Nostr identities. Each account:
+
+- Has its own keypair stored in your system keychain
+- Can send and receive messages independently
+- Has separate profile metadata
+- Can have multiple NIP-05 identifiers
+
+### Removing accounts
+
+<Steps>
+  <Step title="Find the account to remove">
+    Locate the account in the Profiles section.
+  </Step>
+
+  <Step title="Click 'Remove Key'">
+    Click the "Remove Key" button next to the Key ID.
+  </Step>
+
+  <Step title="Confirm removal">
+    The account is removed from:
+    - Your system keychain
+    - The local database
+    - The in-memory key list
+  </Step>
+</Steps>
+
+<Warning>
+Removing an account deletes the private key from your system keychain. Make sure you have a backup of your nsec (private key) before removing an account, or you'll lose access to that identity permanently.
+</Warning>
+
+## Profile metadata
+
+### Editing display name
+
+To update your display name:
+
+<Steps>
+  <Step title="Click 'Edit' next to Display Name">
+    Find your account and click the "Edit" button.
+  </Step>
+
+  <Step title="Update the name">
+    Type your new display name in the text field.
+  </Step>
+
+  <Step title="Save changes">
+    Click "Save" to publish the updated metadata to Nostr relays, or "Cancel" to discard changes.
+
+    <Info>
+    When you save, Hoot creates a kind 0 metadata event and broadcasts it to all connected relays. Other Nostr users will see your updated name.
+    </Info>
+  </Step>
+</Steps>
+
+### Understanding profile metadata
+
+Nostr profile metadata (kind 0 events) includes:
+
+- **display_name**: Your friendly name
+- **name**: Your username or handle
+- **picture**: URL to your profile picture
+- **about**: Bio or description
+- **website**: Your website URL
+- **nip05**: Verified NIP-05 identifier
+
+Metadata is:
+
+- **Public**: Anyone can see your profile metadata
+- **Decentralized**: Stored on Nostr relays, not controlled by any single server
+- **Cached**: Hoot caches metadata locally for fast access
+- **Updated automatically**: When relays send new metadata events
+
+## NIP-05 identifiers
+
+NIP-05 provides human-readable identifiers for Nostr public keys, similar to email addresses.
+
+### What is NIP-05?
+
+A NIP-05 identifier:
+
+- Looks like an email address: `username@domain.com`
+- Maps to your Nostr public key via a JSON file hosted at `https://domain.com/.well-known/nostr.json`
+- Makes it easier for people to find and message you
+- Can be verified to prove ownership
+
+### Adding a NIP-05 identifier
+
+<Steps>
+  <Step title="Enter your NIP-05 address">
+    In the NIP-05 Identifiers section under your profile, type your identifier in the text field (e.g., `alice@example.com`).
+  </Step>
+
+  <Step title="Click 'Verify & Add'">
+    Hoot validates the format and saves the identifier to your local database.
+  </Step>
+
+  <Step title="Background verification">
+    Hoot automatically attempts to verify the NIP-05 by:
+    1. Querying `https://example.com/.well-known/nostr.json`
+    2. Checking if your public key is listed under the username
+    3. Updating the verification status
+  </Step>
+</Steps>
+
+<Note>
+Verification happens in the background. The status icon updates automatically when verification completes.
+</Note>
+
+### NIP-05 status indicators
+
+Each NIP-05 identifier has a status icon:
+
+- **✓ (Green)**: Verified - the identifier successfully resolves to your public key
+- **⏳ (Yellow)**: Pending - verification in progress
+- **✗ (Red)**: Failed - verification failed (domain unreachable or key mismatch)
+
+### Managing NIP-05 identifiers
+
+For each identifier:
+
+- **Remove**: Click to delete the identifier from your profile
+- **Verify**: Click to re-verify the identifier manually
+- **(own)**: Indicates this is marked as your own identifier
+
+### Setting up NIP-05 on your domain
+
+To make a NIP-05 identifier work:
+
+<Steps>
+  <Step title="Create the JSON file">
+    Create a file at `https://yourdomain.com/.well-known/nostr.json` with this structure:
+
+    ```json
+    {
+      "names": {
+        "username": "<your-public-key-in-hex>"
+      }
+    }
+    ```
+
+    Replace `username` with your desired username and `<your-public-key-in-hex>` with your actual public key.
+  </Step>
+
+  <Step title="Configure CORS headers">
+    Ensure your web server sends the appropriate CORS headers to allow Nostr clients to fetch the file:
+
+    ```
+    Access-Control-Allow-Origin: *
+    ```
+  </Step>
+
+  <Step title="Add to Hoot">
+    Enter `username@yourdomain.com` in Hoot's NIP-05 section and click "Verify & Add".
+  </Step>
+</Steps>
+
+### Using NIP-05 when sending messages
+
+When composing a message, you can select which identity to send as:
+
+- **Raw key**: Send without NIP-05 (shows as hex/npub)
+- **NIP-05 identity**: Send with your verified NIP-05 (shows as `user@domain.com`)
+
+Recipients may see your NIP-05 identifier depending on their client.
+
+## Relays
+
+Relays are servers that transmit and store Nostr events. You need to connect to relays to send and receive messages.
+
+### Understanding relays
+
+In Nostr:
+
+- **Decentralized**: No single relay controls the network
+- **Multiple connections**: You can connect to many relays simultaneously
+- **Redundancy**: Connecting to multiple relays improves message delivery and availability
+- **User choice**: You control which relays you use
+
+### Adding a relay
+
+<Steps>
+  <Step title="Enter the relay URL">
+    In the "Add New Relay" field, enter the relay's WebSocket URL. Relay URLs typically start with `wss://` (secure WebSocket).
+
+    Example: `wss://relay.damus.io`
+  </Step>
+
+  <Step title="Click 'Add Relay'">
+    Hoot connects to the relay immediately and adds it to your relay list.
+  </Step>
+</Steps>
+
+### Relay connection status
+
+Each relay displays a colored status indicator:
+
+- **Green**: Connected - actively sending and receiving events
+- **Yellow**: Connecting - attempting to establish connection
+- **Red**: Disconnected - connection failed or lost
+
+<Note>
+Hoot automatically attempts to reconnect to disconnected relays every 5 seconds. When a relay is disconnected, you'll see "Attempting reconnect in X seconds".
+</Note>
+
+### Relay keepalive
+
+Hoot sends keepalive pings to connected relays every 30 seconds to maintain the connection and detect disconnections quickly.
+
+### Removing a relay
+
+<Steps>
+  <Step title="Find the relay">
+    Locate the relay in the "Your Relays" list.
+  </Step>
+
+  <Step title="Click 'Remove Relay'">
+    The relay is immediately disconnected and removed from your relay pool.
+  </Step>
+</Steps>
+
+### Recommended relays
+
+Popular Nostr relays include:
+
+- `wss://relay.damus.io`
+- `wss://relay.nostr.band`
+- `wss://nos.lol`
+- `wss://relay.snort.social`
+- `wss://nostr.wine`
+
+<Info>
+For best results, connect to 3-5 well-established relays. More relays improve message delivery but increase bandwidth usage.
+</Info>
+
+### Relay subscriptions
+
+When connected to a relay, Hoot automatically:
+
+- Subscribes to messages addressed to your public key(s)
+- Subscribes to profile metadata updates
+- Listens for new events in real-time
+- Sends keepalive pings every 30 seconds
+
+## Application storage
+
+Hoot stores data in platform-specific locations:
+
+- **Database**: `{storage_dir}/hoot.db` (SQLite with SQLCipher encryption)
+- **Storage directory**: Varies by platform
+  - Linux: `~/.local/share/hoot/`
+  - macOS: `~/Library/Application Support/hoot/`
+  - Windows: `%APPDATA%\hoot\`
+
+### What's stored locally
+
+- **Events**: All Nostr events (messages, metadata) you've received
+- **Contacts**: Your contact list with petnames
+- **Drafts**: Unsent message drafts
+- **Sender status**: Allowed/junked sender preferences
+- **NIP-05 data**: Your NIP-05 identifiers and verification status
+- **Profile cache**: Cached profile metadata for faster loading
+
+<Info>
+Your private keys are stored separately in your system keychain, not in the database.
+</Info>
+
+## Database encryption
+
+Hoot encrypts your local database using SQLCipher:
+
+- **Password protection**: The password you set during onboarding
+- **AES-256 encryption**: Industry-standard encryption
+- **Local only**: The database never leaves your device
+
+<Warning>
+If you forget your database password, you cannot recover your locally stored messages. Your Nostr identity (keypair) is stored separately and can be exported/imported, but message history will be lost.
+</Warning>
+
+## Privacy and security
+
+### What's private
+
+- **Private keys**: Never leave your device, stored in system keychain
+- **Database**: Encrypted with your password
+- **Message contents**: Encrypted with NIP-59 gift wrap
+- **Metadata**: Relay servers cannot see who you're messaging
+
+### What's public
+
+- **Public keys**: Visible to anyone (required for Nostr)
+- **Profile metadata**: Public information (display name, picture, etc.)
+- **Relay connections**: Relays know your public key and IP address
+- **Message existence**: Relays know encrypted messages exist (but not contents or recipients)
+
+## Troubleshooting
+
+### Relay won't connect
+
+- Check the relay URL is correct (should start with `wss://`)
+- Verify the relay is operational (try accessing it in a web browser)
+- Check your internet connection and firewall settings
+
+### Profile updates not appearing
+
+- Ensure you're connected to at least one relay
+- Wait a few moments for updates to propagate
+- Try manually refreshing the profile
+
+### NIP-05 verification fails
+
+- Verify the JSON file is accessible at `https://domain.com/.well-known/nostr.json`
+- Check that CORS headers are configured correctly
+- Ensure the public key in the JSON matches your actual public key (hex format)
+
+## Next steps
+
+- Learn about [sending messages](/user-guide/sending-messages) using your configured profiles
+- Add [contacts](/user-guide/contacts) to build your network
+- Explore advanced features like multiple accounts and NIP-05 identities

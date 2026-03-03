@@ -1,0 +1,261 @@
+---
+title: Database
+description: SQLite with SQLCipher encryption, migrations, and JSON-based event storage
+---
+
+Hoot uses SQLite with bundled SQLCipher encryption for secure local storage of Nostr events, profile metadata, and application data.
+
+## Database setup
+
+### Connection and initialization
+
+```rust
+pub struct Db {
+    pub(crate) connection: Connection,
+}
+
+impl Db {
+    pub fn new(path: PathBuf) -> Result<Self> {
+        debug!("Loading database at location {:?}", path.to_str());
+        let conn = Connection::open(path)?;
+        Ok(Self { connection: conn })
+    }
+}
+```
+
+The database file is stored at `{storage_dir}/hoot.db` where `storage_dir` is platform-specific:
+- Linux: `~/.local/share/hoot/`
+- macOS: `~/Library/Application Support/hoot/`
+- Windows: `%APPDATA%/hoot/`
+
+### SQLCipher encryption
+
+From src/db/mod.rs:46:
+```rust
+pub fn unlock_with_password(&mut self, password: String) -> Result<()> {
+    self.connection.pragma_update(None, "key", password)?;
+
+    // Apply migrations
+    info!("Running Migrations");
+    MIGRATIONS.to_latest(&mut self.connection)?;
+
+    Ok()
+}
+```
+
+The database:
+- Requires a password to unlock using SQLCipher's `key` pragma
+- Runs migrations automatically after successful unlock
+- Returns `NotADatabase` error for incorrect passwords
+- Remains locked until password is provided
+
+Error handling for wrong passwords:
+```rust
+pub fn format_unlock_error(e: &anyhow::Error) -> String {
+    match e.downcast_ref::<rusqlite_migration::Error>() {
+        Some(rusqlite_migration::Error::RusqliteError { err, .. }) => {
+            match err.sqlite_error_code() {
+                Some(rusqlite::ErrorCode::NotADatabase) => "Wrong password".to_string(),
+                _ => format!("Database error: {}", e),
+            }
+        }
+        _ => format!("Database error: {}", e),
+    }
+}
+```
+
+## Migration system
+
+Migrations are managed using `rusqlite_migration`:
+
+```rust
+static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+
+static MIGRATIONS: LazyLock<Migrations<'static>> =
+    LazyLock::new(|| Migrations::from_directory(&MIGRATIONS_DIR).unwrap());
+```
+
+Migrations are:
+- Embedded in the binary at compile time from `migrations/` directory
+- Automatically applied when database is unlocked
+- Versioned sequentially (001, 002, 003, etc.)
+- Each migration has an `up.sql` file in its directory
+
+## Schema design
+
+### Events table
+
+The core table stores Nostr events as JSON with generated virtual columns:
+
+```sql
+CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    pubkey TEXT NOT NULL GENERATED ALWAYS AS (jsonb_extract (raw, '$.pubkey')),
+    created_at INTEGER NOT NULL GENERATED ALWAYS AS (jsonb_extract (raw, '$.created_at')) VIRTUAL,
+    kind INTEGER NOT NULL GENERATED ALWAYS AS (jsonb_extract (raw, '$.kind')) VIRTUAL,
+    tags BLOB NOT NULL GENERATED ALWAYS AS (jsonb_extract (raw, '$.tags')) VIRTUAL,
+    content TEXT NOT NULL GENERATED ALWAYS AS (jsonb_extract (raw, '$.content')) VIRTUAL,
+    sig TEXT GENERATED ALWAYS AS (jsonb_extract (raw, '$.sig')) VIRTUAL,
+    raw BLOB NOT NULL
+);
+
+CREATE INDEX idx_events_pubkey ON events (pubkey);
+CREATE INDEX idx_events_kind ON events (created_at);
+```
+
+Key features:
+- **Raw JSON storage**: Complete event stored in `raw` column as JSON
+- **Virtual columns**: Common fields extracted using `jsonb_extract()` for efficient querying
+- **Automatic extraction**: SQLite generates column values automatically from JSON
+- **No data duplication**: Virtual columns don't take storage space
+
+### Profile metadata table
+
+Caches Nostr metadata events (kind 0) for quick profile lookups:
+
+```rust
+// Stored as JSON and cached in HashMap during runtime
+pub struct ProfileMetadata {
+    pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub about: Option<String>,
+    pub picture: Option<String>,
+    pub nip05: Option<String>,
+    pub banner: Option<String>,
+    pub website: Option<String>,
+}
+```
+
+The application maintains a `HashMap<String, ProfileOption>` cache for fast access:
+- `ProfileOption::Some(metadata)`: Metadata loaded
+- `ProfileOption::Waiting`: Request sent to relays, awaiting response
+- `ProfileOption::None`: Not yet requested
+
+### Pubkeys table
+
+Stores account public keys for the user's identities:
+
+```sql
+CREATE TABLE IF NOT EXISTS pubkeys (
+    pubkey TEXT PRIMARY KEY NOT NULL
+);
+```
+
+Corresponding private keys are stored in platform keystore, not in database.
+
+### Additional tables
+
+- **contacts**: User's contact list with optional petnames
+- **drafts**: Unsent message drafts with metadata
+- **deletions**: Tracks deleted events to prevent re-insertion
+- **trash**: Soft-deleted messages
+- **sender_status**: Tracks trusted/blocked senders
+- **nip05**: Caches NIP-05 verification status
+
+## Event storage
+
+From src/db/events.rs:33:
+```rust
+pub fn store_event(
+    &self,
+    event: &Event,
+    unwrapped: Option<&UnwrappedGift>,
+    gift_wrap_recipient: Option<&str>,
+) -> Result<()> {
+    if let Some(unwrapped) = unwrapped {
+        let mut rumor = unwrapped.rumor.clone();
+        rumor.ensure_id();
+
+        if unwrapped.sender != rumor.pubkey {
+            anyhow::bail!("Seal signer does not match rumor pubkey");
+        }
+
+        let id = rumor.id.expect("Invalid Gift Wrapped Event").to_hex();
+        let author_pubkey = rumor.pubkey.to_string();
+        if self.is_deleted(&id, Some(author_pubkey.as_str()))? {
+            return Ok(());
+        }
+        let raw = json!(rumor).to_string();
+
+        self.connection.execute(
+            "INSERT OR IGNORE INTO events (id, raw) VALUES (?1, ?2)",
+            (id.clone(), raw),
+        )?;
+
+        self.save_gift_wrap_map(&event.id.to_string(), &id, gift_wrap_recipient, event.created_at.as_u64() as i64)?;
+        return Ok(());
+    }
+
+    let id = event.id.to_string();
+    let author_pubkey = event.pubkey.to_string();
+    if self.is_deleted(&id, Some(author_pubkey.as_str()))? {
+        return Ok(());
+    }
+    let raw = json!(event).to_string();
+
+    self.connection.execute(
+        "INSERT OR IGNORE INTO events (id, raw) VALUES (?1, ?2)",
+        (id, raw),
+    )?;
+
+    Ok()
+}
+```
+
+Key behaviors:
+- **Gift wrap unwrapping**: Gift-wrapped events (kind 1059) are automatically unwrapped and stored as their inner rumor
+- **Duplicate prevention**: `INSERT OR IGNORE` prevents duplicate events
+- **Deletion check**: Events marked as deleted are not stored
+- **Raw JSON**: Complete event serialized to JSON for storage
+
+## Query patterns
+
+The database supports efficient queries using virtual columns:
+
+```rust
+// Example: Query events by kind and time range
+SELECT id, pubkey, created_at, content 
+FROM events 
+WHERE kind = 2024 
+  AND created_at > ? 
+ORDER BY created_at DESC;
+```
+
+Virtual columns enable:
+- Filtering by event fields without parsing JSON
+- Efficient indexing on commonly queried fields
+- Complex queries with joins and aggregations
+
+## Thread reconstruction
+
+The database uses recursive CTEs to reconstruct message threads:
+
+```sql
+WITH RECURSIVE thread AS (
+  -- Base case: the root event
+  SELECT id, pubkey, created_at, content, tags, raw
+  FROM events
+  WHERE id = ?
+  
+  UNION ALL
+  
+  -- Recursive case: events that reference thread members
+  SELECT e.id, e.pubkey, e.created_at, e.content, e.tags, e.raw
+  FROM events e
+  INNER JOIN thread t
+  WHERE jsonb_extract(e.tags, '$[?(@[0]=="e")][1]') = t.id
+)
+SELECT * FROM thread ORDER BY created_at ASC;
+```
+
+This walks both parent and child references to build complete conversation threads.
+
+## Performance considerations
+
+- **Indexes**: Created on `pubkey` and `created_at` for common queries
+- **Virtual columns**: Avoid JSON parsing overhead for frequent operations
+- **Transaction batching**: Multiple operations grouped in transactions
+- **Lazy loading**: Profile metadata fetched on-demand
+- **Caching**: In-memory HashMap cache for profile metadata
+
+The database design prioritizes flexibility (storing raw JSON) with performance (virtual columns and indexes) for a responsive user experience.

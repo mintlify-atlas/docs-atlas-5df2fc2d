@@ -1,0 +1,184 @@
+---
+title: Installation
+description: How to install Hoot on Linux, macOS, and Windows
+---
+
+Hoot is a native desktop email client built on the Nostr protocol. Follow the instructions below to install Hoot on your platform.
+
+## System requirements
+
+Before installing Hoot, ensure your system meets the following requirements:
+
+- **Operating System**: Linux, macOS, or Windows
+- **Rust**: Version 1.70 or later (for building from source)
+- **OpenSSL**: Development libraries installed
+- **Perl**: Required for some build dependencies
+
+## Install from pre-built binaries
+
+<Info>
+Pre-built binaries are coming soon. For now, please build from source.
+</Info>
+
+## Build from source
+
+Building Hoot from source is currently the primary installation method.
+
+### Prerequisites
+
+First, install the required dependencies for your platform.
+
+<Tabs>
+  <Tab title="Linux">
+    Install Rust and required build dependencies:
+
+    ```bash
+    # Install Rust
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    source $HOME/.cargo/env
+
+    # Install OpenSSL development libraries
+    # Ubuntu/Debian
+    sudo apt-get install libssl-dev pkg-config
+
+    # Fedora/RHEL
+    sudo dnf install openssl-devel pkg-config
+
+    # Arch Linux
+    sudo pacman -S openssl pkg-config
+    ```
+  </Tab>
+  <Tab title="macOS">
+    Install Rust and required build dependencies:
+
+    ```bash
+    # Install Rust
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    source $HOME/.cargo/env
+
+    # Install Xcode command line tools (if not already installed)
+    xcode-select --install
+
+    # OpenSSL is typically pre-installed on macOS
+    ```
+  </Tab>
+  <Tab title="Windows">
+    Install Rust and required build dependencies:
+
+    1. Download and install [Rust for Windows](https://www.rust-lang.org/tools/install)
+    2. Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with C++ support
+    3. Install [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html) or use a package manager like [Chocolatey](https://chocolatey.org/):
+
+    ```powershell
+    choco install openssl
+    ```
+  </Tab>
+</Tabs>
+
+### Clone and build
+
+Once you have the prerequisites installed, follow these steps:
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Hoot repository from GitHub:
+
+    ```bash
+    git clone https://github.com/your-username/hoot.git
+    cd hoot
+    ```
+  </Step>
+
+  <Step title="Build the release version">
+    Compile Hoot in release mode for optimal performance:
+
+    ```bash
+    cargo build --release
+    ```
+
+    This process may take several minutes as it downloads and compiles all dependencies.
+  </Step>
+
+  <Step title="Run Hoot">
+    After the build completes, run Hoot:
+
+    ```bash
+    cargo run --release
+    ```
+
+    The compiled binary is also available at `target/release/hoot` and can be moved to your preferred location.
+  </Step>
+</Steps>
+
+### Install to system
+
+To install Hoot to your system path:
+
+```bash
+cargo install --path .
+```
+
+This installs the `hoot` binary to `~/.cargo/bin/`, which should be in your PATH.
+
+## Development build
+
+If you're contributing to Hoot or want to run a development build:
+
+```bash
+# Build and run in development mode
+cargo build
+cargo run
+```
+
+Development builds include debug symbols and are not optimized, making them slower but easier to debug.
+
+## Using Nix
+
+If you have Nix with flakes enabled, you can enter a development environment with all dependencies pre-configured:
+
+```bash
+nix develop
+```
+
+This automatically sets up Rust, OpenSSL, and other required dependencies.
+
+## Profiling build
+
+For performance analysis using the puffin profiler:
+
+```bash
+cargo build --features profiling
+cargo run --features profiling
+```
+
+<Note>
+When profiling is enabled, Hoot starts a puffin server on `127.0.0.1:8585` and attempts to launch `puffin_viewer` automatically.
+</Note>
+
+## Troubleshooting
+
+### OpenSSL linking errors
+
+If you encounter OpenSSL linking errors:
+
+- **Linux**: Ensure `libssl-dev` and `pkg-config` are installed
+- **macOS**: Try setting the OpenSSL path:
+  ```bash
+  export OPENSSL_DIR=/usr/local/opt/openssl@3
+  ```
+- **Windows**: Ensure OpenSSL is installed and the `OPENSSL_DIR` environment variable points to the installation directory
+
+### Rust version issues
+
+Ensure you're running Rust 1.70 or later:
+
+```bash
+rustc --version
+
+# Update if needed
+rustup update
+```
+
+## Next steps
+
+After installing Hoot, proceed to [account setup](/user-guide/account-setup) to create or import your Nostr identity.

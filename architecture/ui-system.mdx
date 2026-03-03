@@ -1,0 +1,432 @@
+---
+title: UI system
+description: Immediate-mode GUI architecture, page-based navigation, and component structure
+---
+
+Hoot's UI is built with egui, an immediate-mode GUI framework, featuring modular components and page-based navigation.
+
+## Architecture overview
+
+From src/main.rs:62:
+```rust
+pub struct Hoot {
+    pub page: Page,
+    pub focused_post: String,
+    pub show_trashed_post: bool,
+    status: HootStatus,
+    state: HootState,
+    relays: relay::RelayPool,
+    events: Vec<nostr::Event>,
+    account_manager: account_manager::AccountManager,
+    pub active_account: Option<nostr::Keys>,
+    pub db: db::Db,
+    table_entries: Vec<TableEntry>,
+    trash_entries: Vec<TableEntry>,
+    request_entries: Vec<TableEntry>,
+    junk_entries: Vec<TableEntry>,
+    profile_metadata: HashMap<String, profile_metadata::ProfileOption>,
+    pub contacts_manager: ContactsManager,
+    drafts: Vec<db::Draft>,
+    nip05_verifier: nip05::Nip05Verifier,
+    nip05_resolver: nip05::Nip05Resolver,
+}
+```
+
+Key characteristics:
+- **Immediate-mode**: UI rebuilt every frame based on current state
+- **Single state struct**: All application state in `Hoot` struct
+- **No retained widgets**: Widget state ephemeral, recreated each frame
+- **Fast iteration**: UI code reads like drawing commands
+
+## Page system
+
+Navigation uses an enum to represent different views:
+
+```rust
+pub enum Page {
+    Inbox,
+    Drafts,
+    Starred,
+    Archived,
+    Trash,
+    Requests,
+    Junk,
+    Settings,
+    Contacts,
+    Onboarding,
+    UnlockDatabase,
+}
+```
+
+Page rendering:
+```rust
+fn render_left_panel(app: &mut Hoot, ctx: &egui::Context) {
+    // Navigation items
+    let nav_items: Vec<(&str, Page, usize)> = vec![
+        ("📥 Inbox", Page::Inbox, app.table_entries.len()),
+        ("📝 Drafts", Page::Drafts, app.drafts.len()),
+        ("⭐ Starred", Page::Starred, 0),
+        ("📁 Archived", Page::Archived, 0),
+        ("🗑 Trash", Page::Trash, app.trash_entries.len()),
+        ("📬 Requests", Page::Requests, app.request_entries.len()),
+        ("🚫 Junk", Page::Junk, app.junk_entries.len()),
+    ];
+    
+    for (label, page, count) in nav_items {
+        if render_nav_item(ui, label, app.page == page).clicked() {
+            app.page = page;
+        }
+    }
+}
+```
+
+Each page:
+- Has dedicated module in `src/ui/`
+- Implements its own rendering logic
+- Shares common state from `Hoot` struct
+- Can modify app state during render
+
+## Component modules
+
+From src/ui/mod.rs:
+```rust
+pub mod account_setup;
+pub mod add_account_window;
+pub mod compose_window;
+pub mod contacts;
+pub mod drafts_page;
+pub mod inbox;
+pub mod junk;
+pub mod onboarding;
+pub mod requests;
+pub mod search;
+pub mod settings;
+pub mod thread_view;
+pub mod trash;
+pub mod unlock_database;
+```
+
+Each module encapsulates:
+- Page-specific rendering code
+- User interaction handling
+- State management for that view
+- Database queries and updates
+
+## ComposeWindow
+
+Floating window for composing messages:
+
+```rust
+pub struct ComposeWindowState {
+    pub subject: String,
+    pub to_field: String,
+    pub parent_events: Vec<EventId>,
+    pub content: String,
+    pub selected_account: Option<Keys>,
+    pub selected_nip05: Option<String>,
+    pub minimized: bool,
+    pub draft_id: Option<i64>,
+    pub send_status: Option<(String, Color32)>,
+}
+```
+
+From src/ui/compose_window.rs:39:
+```rust
+pub fn show_window(app: &mut crate::Hoot, ctx: &egui::Context, id: egui::Id) -> bool {
+    let screen_rect = ctx.screen_rect();
+    let min_width = screen_rect.width().min(600.0);
+    let min_height = screen_rect.height().min(400.0);
+
+    let mut open = true;
+
+    egui::Window::new("New Message")
+        .id(id)
+        .open(&mut open)
+        .default_size([min_width, min_height])
+        .min_width(300.0)
+        .min_height(200.0)
+        .default_pos([
+            screen_rect.right() - min_width - 20.0,
+            screen_rect.bottom() - min_height - 20.0,
+        ])
+        .show(ctx, |ui| {
+            // Compose UI implementation
+        });
+
+    open
+}
+```
+
+Key features:
+- **Multiple instances**: Can have multiple compose windows open simultaneously
+- **Unique IDs**: Each window tracked by `egui::Id` (random u32)
+- **Draft support**: Auto-save to drafts, restore from drafts
+- **Account selector**: Choose sending identity and NIP-05
+- **NIP-05 resolution**: Resolve recipient addresses in real-time
+- **Rich editor**: Toolbar for formatting (future implementation)
+
+Multiple compose windows:
+```rust
+pub struct HootState {
+    pub compose_window: HashMap<egui::Id, ComposeWindowState>,
+    // ... other state
+}
+```
+
+Creating new compose window:
+```rust
+if ui.button("✉ Compose").clicked() {
+    let state = ui::compose_window::ComposeWindowState {
+        subject: String::new(),
+        to_field: String::new(),
+        content: String::new(),
+        parent_events: Vec::new(),
+        selected_account: None,
+        selected_nip05: None,
+        minimized: false,
+        draft_id: None,
+        send_status: None,
+    };
+    app.state.compose_window.insert(egui::Id::new(rand::random::<u32>()), state);
+}
+```
+
+## ContactsManager
+
+Manages contact list with metadata and images:
+
+```rust
+pub struct ContactsManager {
+    contacts: Vec<Contact>,
+    image_loader: ImageLoader,
+}
+
+pub struct Contact {
+    pub pubkey: String,
+    pub petname: Option<String>,
+    pub metadata: ProfileMetadata,
+}
+```
+
+From src/ui/contacts.rs:68:
+```rust
+impl ContactsManager {
+    pub fn new() -> Self {
+        Self {
+            contacts: Vec::new(),
+            image_loader: ImageLoader::new(),
+        }
+    }
+
+    pub fn load_from_db(
+        &mut self,
+        db: &Db,
+        profile_cache: &mut HashMap<String, ProfileOption>,
+    ) -> anyhow::Result<()> {
+        let contacts_data = db.get_user_contacts()?;
+
+        self.contacts = contacts_data
+            .into_iter()
+            .map(|(pubkey, petname, metadata)| Contact {
+                pubkey,
+                petname,
+                metadata,
+            })
+            .collect();
+
+        self.contacts
+            .sort_by(|a, b| contact_sort_key(a).cmp(&contact_sort_key(b)));
+
+        // Cache metadata in profile_cache
+        for contact in &self.contacts {
+            profile_cache.insert(
+                contact.pubkey.clone(),
+                ProfileOption::Some(contact.metadata.clone()),
+            );
+        }
+
+        Ok(())
+    }
+}
+```
+
+Features:
+- **Petnames**: Optional user-assigned names for contacts
+- **Metadata caching**: Profile info cached for performance
+- **Image loading**: Background thread loading of profile images
+- **Sorted display**: Contacts sorted alphabetically by best name
+- **Add/remove**: CRUD operations synced with database
+
+Contact display names:
+```rust
+fn best_name(&self) -> &str {
+    self.petname
+        .as_deref()
+        .or(self.metadata.display_name.as_deref())
+        .or(self.metadata.name.as_deref())
+        .unwrap_or(&self.pubkey)
+}
+```
+
+Priority: petname > display_name > name > pubkey
+
+## Image loading
+
+Profile images loaded asynchronously:
+
+```rust
+pub struct ImageLoader {
+    pending: HashMap<String, ImageState>,
+}
+
+enum ImageState {
+    Pending,
+    Loading,
+    Loaded(TextureHandle),
+    Failed,
+}
+```
+
+Loading flow:
+1. UI requests image for pubkey
+2. If not cached, spawn background thread
+3. Thread downloads image via HTTP
+4. Image decoded and uploaded to GPU
+5. `TextureHandle` cached for subsequent frames
+6. UI displays image or fallback initials
+
+Background loading prevents UI blocking on network requests.
+
+## Layout structure
+
+Main application layout:
+
+```
+┌─────────────────────────────────────────────────┐
+│ Title Bar                                        │
+├──────────┬──────────────────────┬────────────────┤
+│          │                      │                │
+│  Left    │    Central Panel     │  Right Panel   │
+│  Panel   │    (Current Page)    │  (Thread View) │
+│          │                      │                │
+│ - Compose│                      │                │
+│ - Inbox  │                      │                │
+│ - Drafts │                      │                │
+│ - Trash  │                      │                │
+│ - etc    │                      │                │
+│          │                      │                │
+└──────────┴──────────────────────┴────────────────┘
+       ↑              ↑                  ↑
+   Navigation    Content Area      Optional Detail
+```
+
+From src/main.rs:140:
+```rust
+fn render_left_panel(app: &mut Hoot, ctx: &egui::Context) {
+    egui::SidePanel::left("left_panel")
+        .default_width(style::SIDEBAR_WIDTH)
+        .frame(
+            Frame::none()
+                .fill(style::SIDEBAR_BG)
+                .inner_margin(Margin::symmetric(16, 12)),
+        )
+        .show(ctx, |ui| {
+            // Navigation UI
+        });
+}
+```
+
+Panels:
+- **Left panel**: Navigation and compose button (fixed width)
+- **Central panel**: Main content area (fills remaining space)
+- **Right panel**: Optional detail view (conditional)
+
+## State management
+
+Application state organization:
+
+```rust
+pub struct HootState {
+    pub compose_window: HashMap<egui::Id, ComposeWindowState>,
+    pub onboarding: OnboardingState,
+    pub settings: SettingsState,
+    // ... other component states
+}
+```
+
+State characteristics:
+- **Centralized**: All state in `Hoot` struct
+- **Mutable**: Components receive `&mut Hoot` for modification
+- **Persistent**: State survives across frames
+- **Serializable**: Some state persisted to disk (via eframe)
+
+## Event loop
+
+Main update/render loop:
+
+```rust
+impl eframe::App for Hoot {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 1. Process relay messages
+        while let Some((relay_url, message)) = self.relays.try_recv() {
+            self.process_message(&relay_url, &message);
+        }
+
+        // 2. Keepalive relays
+        self.relays.keepalive(|| ctx.request_repaint());
+
+        // 3. Render UI
+        render_app(self, ctx);
+
+        // 4. Handle compose windows
+        let mut windows_to_close = Vec::new();
+        for (id, _) in self.state.compose_window.clone() {
+            if !ComposeWindow::show_window(self, ctx, id) {
+                windows_to_close.push(id);
+            }
+        }
+        for id in windows_to_close {
+            self.state.compose_window.remove(&id);
+        }
+    }
+}
+```
+
+Each frame:
+1. Process network events (relay messages)
+2. Update connection state (keepalive)
+3. Render main UI (navigation + content)
+4. Render floating windows (compose windows)
+5. Clean up closed windows
+
+## Styling
+
+Custom theme and colors:
+
+```rust
+// From src/style.rs
+pub const ACCENT: Color32 = Color32::from_rgb(149, 117, 205);
+pub const ACCENT_LIGHT: Color32 = Color32::from_rgba_premultiplied(149, 117, 205, 40);
+pub const SIDEBAR_BG: Color32 = Color32::from_rgb(26, 27, 38);
+pub const TEXT_MUTED: Color32 = Color32::from_rgb(139, 148, 158);
+pub const SIDEBAR_WIDTH: f32 = 200.0;
+```
+
+Theme applied at startup:
+```rust
+fn apply_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    // ... customize style
+    ctx.set_style(style);
+}
+```
+
+## Performance considerations
+
+- **Retained mode where needed**: Window state, images, metadata cached
+- **Lazy loading**: Profile metadata fetched on-demand
+- **Background threads**: Network operations off main thread
+- **Efficient repaints**: Only repaint when events occur (wake-up callbacks)
+- **Virtual scrolling**: Large lists use `egui::ScrollArea`
+
+The immediate-mode approach simplifies UI logic while careful caching maintains performance for data-heavy operations.

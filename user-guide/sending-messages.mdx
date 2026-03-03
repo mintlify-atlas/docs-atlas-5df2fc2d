@@ -1,0 +1,210 @@
+---
+title: Sending messages
+description: Compose and send private messages using Hoot
+---
+
+Hoot provides an email-like experience for sending private messages over the Nostr protocol. All messages are encrypted using NIP-59 gift wrap for privacy.
+
+## Composing a new message
+
+To create a new message:
+
+<Steps>
+  <Step title="Open the compose window">
+    Click the "Compose" or "New Message" button in the main interface. A new compose window will open.
+
+    <Info>
+    Compose windows are floating and can be moved around. You can have multiple compose windows open at once to draft several messages simultaneously.
+    </Info>
+  </Step>
+
+  <Step title="Enter recipient information">
+    In the "To" field, enter one or more recipients. Hoot supports multiple recipient formats:
+
+    - **npub format**: `npub1...` (Nostr public key in bech32 format)
+    - **Hex format**: 64-character hexadecimal public key
+    - **NIP-05 format**: `user@domain.com` (Nostr identifier)
+
+    Separate multiple recipients with spaces.
+
+    <Note>
+    When you enter a NIP-05 identifier (like `user@domain.com`), Hoot automatically resolves it to the corresponding Nostr public key. You'll see "Resolving NIP-05 addresses..." while this happens.
+    </Note>
+  </Step>
+
+  <Step title="Add a subject">
+    Enter a subject for your message in the "Subject" field. This helps recipients understand the topic at a glance.
+  </Step>
+
+  <Step title="Write your message">
+    Type your message content in the large text area. The compose window includes a formatting toolbar with buttons for:
+
+    - **B**: Bold text (planned feature)
+    - **I**: Italic text (planned feature)
+    - **U**: Underline text (planned feature)
+    - **Link icon**: Insert hyperlink (planned feature)
+    - **Paperclip icon**: Attach files (planned feature)
+    - **Emoji icon**: Insert emoji (planned feature)
+
+    <Info>
+    Some formatting features are planned for future releases.
+    </Info>
+  </Step>
+
+  <Step title="Select sender account">
+    At the bottom of the compose window, use the "Send as" dropdown to select which account to send from. You can choose:
+
+    - Your account with raw key (no NIP-05)
+    - Your account with a verified NIP-05 identifier
+
+    <Warning>
+    You must select a sender account before sending. If no account is selected, the send button will not work.
+    </Warning>
+  </Step>
+
+  <Step title="Send the message">
+    Click the blue "Send" button to send your message. Hoot will:
+
+    1. Validate all recipients
+    2. Resolve any NIP-05 identifiers
+    3. Create encrypted gift-wrap events (one per recipient)
+    4. Broadcast the events to all connected relays
+
+    If successful, the compose window will close automatically.
+  </Step>
+</Steps>
+
+## Recipient validation
+
+Before sending, Hoot validates all recipients:
+
+- **Valid formats**: Recipients must be in npub, hex, or NIP-05 format
+- **NIP-05 resolution**: Email-like identifiers are resolved to public keys
+- **Resolution errors**: If a NIP-05 identifier fails to resolve, you'll see an error message: "Could not resolve: user@domain.com"
+- **No valid recipients**: If no recipients can be validated, you'll see: "No valid recipients"
+
+<Note>
+When you see "Resolving NIP-05 addresses...", wait a moment and try sending again. NIP-05 resolution happens in the background and may take a few seconds.
+</Note>
+
+## Replying to messages
+
+To reply to a message:
+
+<Steps>
+  <Step title="Open the message">
+    Click on a message in your inbox to view the full conversation thread.
+  </Step>
+
+  <Step title="Click 'Reply'">
+    Click the "Reply" button. A compose window will open with:
+
+    - The recipient pre-filled with the original sender
+    - The subject prefixed with "Re:" (if not already present)
+    - The parent event linked to maintain thread continuity
+  </Step>
+
+  <Step title="Write and send">
+    Type your reply and click "Send". Your reply will be part of the conversation thread.
+  </Step>
+</Steps>
+
+## Message threading
+
+Hoot supports email-style conversation threads. When you reply to a message, Hoot:
+
+- Links your reply to the parent message using the `parent_events` field
+- Preserves the subject line
+- Groups related messages together in the inbox view
+
+Threads are reconstructed using recursive database queries that walk both parent and child references.
+
+## Saving drafts
+
+You can save your message as a draft and return to it later:
+
+<Steps>
+  <Step title="Click 'Save Draft'">
+    Click the "Save Draft" button at the bottom of the compose window.
+  </Step>
+
+  <Step title="Access your drafts">
+    Navigate to the "Drafts" page in the main interface to see all saved drafts.
+  </Step>
+
+  <Step title="Resume editing">
+    Click on a draft to open it in a compose window and continue editing.
+  </Step>
+</Steps>
+
+<Info>
+Drafts are saved locally in your encrypted database and are not synchronized across devices.
+</Info>
+
+## Understanding gift wrap encryption
+
+Hoot uses NIP-59 (gift wrap) for all private messages. Here's what this means:
+
+- **End-to-end encryption**: Only you and the recipient(s) can read the message
+- **Metadata privacy**: Each recipient receives a separate gift-wrap event, preventing correlation
+- **Relay privacy**: Relays cannot see who is messaging whom or read message contents
+- **One event per recipient**: If you send to 3 recipients, 3 separate encrypted events are created
+
+## Multiple compose windows
+
+Hoot allows you to open multiple compose windows simultaneously. Each window:
+
+- Operates independently
+- Can be moved and positioned anywhere on screen
+- Tracks its own draft state
+- Has a unique ID for window management
+
+This allows you to draft multiple messages at once or reference one message while writing another.
+
+## NIP-05 addresses
+
+NIP-05 identifiers work like email addresses but resolve to Nostr public keys:
+
+- **Format**: `username@domain.com`
+- **Resolution**: Hoot queries `https://domain.com/.well-known/nostr.json` to find the public key
+- **Caching**: Resolved addresses are cached to speed up subsequent sends
+- **Status indicators**:
+  - "Resolving NIP-05 addresses...": Resolution in progress
+  - "Could not resolve: ...": Resolution failed
+  - No message: Resolution successful
+
+<Info>
+You can add and verify your own NIP-05 identifiers in [Settings](/user-guide/settings).
+</Info>
+
+## Sending status messages
+
+The compose window displays status messages above the Send button:
+
+- **Yellow text**: "Resolving NIP-05 addresses..." (wait before sending)
+- **Red text**: Error messages (invalid recipients, resolution failures)
+- **No message**: Ready to send
+
+## Troubleshooting
+
+### "No Account Selected" error
+
+Ensure you've selected a sender account from the "Send as" dropdown at the bottom of the compose window.
+
+### NIP-05 resolution failures
+
+- Check that the NIP-05 identifier is spelled correctly
+- Ensure the domain has a valid `.well-known/nostr.json` file
+- Try using the npub or hex format instead
+
+### Message not received
+
+- Verify the recipient's public key is correct
+- Check that you're connected to relays in [Settings](/user-guide/settings)
+- Ensure the recipient is using a Nostr client that supports NIP-59 gift wrap
+
+## Next steps
+
+- Learn how to manage [contacts](/user-guide/contacts)
+- Configure [relay settings](/user-guide/settings) to improve message delivery
+- Understand [NIP-05 verification](/user-guide/settings#nip-05-identifiers) for easier addressing

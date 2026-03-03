@@ -1,0 +1,216 @@
+---
+title: Contacts
+description: Manage your contacts and control who can send you messages
+---
+
+Hoot's Contacts page helps you manage the people you communicate with and control who can reach your inbox.
+
+## Viewing contacts
+
+Navigate to the Contacts page to see all your saved contacts. Each contact card displays:
+
+- **Profile picture or avatar**: If the contact has a profile picture, it's displayed. Otherwise, initials are shown in a colored circle
+- **Display name**: The contact's petname (if set) or their Nostr display name
+- **Nostr name**: Shows underneath if different from the petname
+- **Public key**: The contact's public key in hex format (in small gray text)
+
+## Adding contacts
+
+<Steps>
+  <Step title="Open the add contact form">
+    Click the "+ Add Contact" button at the top of the Contacts page. This opens the add contact form.
+  </Step>
+
+  <Step title="Enter the public key">
+    In the "Public Key" field, enter the contact's Nostr public key in one of these formats:
+
+    - **npub format**: `npub1...` (Nostr public key in bech32 format)
+    - **Hex format**: 64-character hexadecimal public key
+
+    <Info>
+    Hoot validates the key format in real-time. If the format is invalid, you'll see an error: "Invalid public key. Use npub1... or 64-char hex."
+    </Info>
+  </Step>
+
+  <Step title="Add a petname (optional)">
+    In the "Petname" field, enter a nickname for this contact. Petnames are useful for:
+
+    - Giving friends memorable names
+    - Distinguishing between contacts with similar Nostr names
+    - Organizing your contact list
+
+    Petnames are private and only visible to you.
+  </Step>
+
+  <Step title="Save the contact">
+    Click "Save" to add the contact. The contact is saved to your local database and appears in your contacts list.
+
+    Click "Cancel" to close the form without saving.
+  </Step>
+</Steps>
+
+<Note>
+If a contact already exists, you'll see an error: "Contact already exists."
+</Note>
+
+## Editing contacts
+
+### Editing petnames
+
+<Steps>
+  <Step title="Click 'Edit' on the contact card">
+    Find the contact you want to edit and click the "Edit" button on their card.
+  </Step>
+
+  <Step title="Update the petname">
+    Modify the petname in the text field that appears.
+  </Step>
+
+  <Step title="Save changes">
+    Click "Save" to update the petname, or "Cancel" to discard changes.
+
+    <Info>
+    To remove a petname, clear the field and click "Save". The contact will then be displayed using their Nostr name.
+    </Info>
+  </Step>
+</Steps>
+
+## Removing contacts
+
+To remove a contact:
+
+<Steps>
+  <Step title="Click the 'X' button">
+    On the contact card, click the red "X" button in the top-right corner.
+  </Step>
+
+  <Step title="Confirm removal">
+    The contact is immediately removed from your contacts list and the local database.
+  </Step>
+</Steps>
+
+<Warning>
+Removing a contact does not delete message history. It only removes them from your contacts list.
+</Warning>
+
+## Contact sorting
+
+Contacts are automatically sorted alphabetically by their display name (petname > display_name > name > pubkey).
+
+## Contact avatars
+
+Hoot displays contact profile pictures when available:
+
+- **Profile pictures**: Loaded from the `picture` URL in the contact's Nostr metadata
+- **Initials**: If no picture is available, up to 2 initials are shown in a colored circle
+- **Async loading**: Images are loaded in background threads to keep the UI responsive
+- **Caching**: Images are cached to reduce network requests
+
+## Contact metadata
+
+When you add a contact, Hoot automatically:
+
+1. Checks if their metadata is already cached
+2. Displays their display name, username, and profile picture if available
+3. Subscribes to metadata updates from relays
+4. Updates the contact card when new metadata arrives
+
+Contact metadata includes:
+
+- **Display name**: The contact's friendly name
+- **Name**: The contact's username or handle
+- **Picture**: URL to their profile picture
+- **Other fields**: About text, website, etc. (shown in profile views)
+
+## Allowed senders
+
+The Contacts page includes an "Allowed Senders" section for managing message permissions.
+
+### Understanding sender status
+
+Hoot uses a sender status system to control who can reach your inbox:
+
+- **Allowed**: Messages appear in your inbox
+- **Junked**: Messages go to the Junk folder
+- **Unknown**: Messages appear in Requests (require approval)
+
+### Viewing allowed senders
+
+Expand the "Allowed Senders" section to see a list of public keys that can send messages to your inbox. Each entry shows:
+
+- Display name or username (if available)
+- Public key in hex format
+- Action buttons
+
+### Managing allowed senders
+
+For each allowed sender:
+
+- **Move to Junk**: Click to move this sender to junked status. Future messages from them will go to the Junk folder
+- **Remove**: Click to remove the allowed status. Future messages will go to Requests
+
+<Note>
+These actions don't affect existing messages. Only future messages are filtered based on sender status.
+</Note>
+
+## NIP-05 verification
+
+Contacts may have NIP-05 identifiers (like `user@domain.com`) associated with their public key. These appear in:
+
+- The compose window when selecting a sender account
+- Contact metadata if the contact has verified their NIP-05
+
+Learn more about setting up your own NIP-05 in [Settings](/user-guide/settings#nip-05-identifiers).
+
+## Contact images
+
+Profile images are loaded and displayed using these steps:
+
+1. **Request**: When a contact is displayed, Hoot checks if an image should be loaded
+2. **Background fetch**: The image is downloaded in a background thread to avoid blocking the UI
+3. **Cache**: Successfully loaded images are cached in memory
+4. **Display**: The image is rendered as a texture in the contact card
+5. **Fallback**: If loading fails or no picture URL exists, initials are shown
+
+### Image invalidation
+
+Images are automatically invalidated and reloaded when:
+
+- A contact's picture URL changes
+- A contact is removed and re-added
+
+## Contacts and sender requests
+
+When someone not in your contacts sends you a message:
+
+1. The message appears in the "Requests" folder
+2. You can approve or junk the sender
+3. Approving adds them to allowed senders (they don't need to be in contacts)
+4. Adding them to contacts also allows messages
+
+<Info>
+Contacts and allowed senders are separate. You can:
+- Have contacts who aren't allowed senders
+- Have allowed senders who aren't contacts
+- Combine both for complete control
+</Info>
+
+## Syncing contacts across devices
+
+<Warning>
+Contacts are currently stored locally and are not synchronized across devices. If you use Hoot on multiple computers, you'll need to add contacts separately on each device.
+</Warning>
+
+Future versions of Hoot may support Nostr-based contact list synchronization using NIP-02.
+
+## Importing/exporting contacts
+
+<Info>
+Contact import/export features are planned for a future release.
+</Info>
+
+## Next steps
+
+- Configure your [profile and NIP-05 identifiers](/user-guide/settings)
+- Learn about [sending messages](/user-guide/sending-messages) to contacts
+- Understand message filtering and sender management

@@ -1,0 +1,311 @@
+---
+title: RelayPool
+description: Manages WebSocket connections to multiple Nostr relays with automatic reconnection and keepalive
+---
+
+The `RelayPool` struct manages connections to multiple Nostr relays, handles subscriptions, and provides automatic reconnection with keepalive functionality.
+
+## Struct fields
+
+<ParamField path="relays" type="HashMap<String, Relay>">
+  Map of relay URLs to their corresponding Relay connection objects
+</ParamField>
+
+<ParamField path="subscriptions" type="HashMap<String, Subscription>">
+  Map of subscription IDs to Subscription objects tracking active Nostr filters
+</ParamField>
+
+## Methods
+
+### new()
+
+Creates a new `RelayPool` instance with no connections.
+
+```rust
+pub fn new() -> Self
+```
+
+<ResponseField name="return" type="RelayPool">
+  A new RelayPool instance with empty relay and subscription maps
+</ResponseField>
+
+### add_url()
+
+Adds a new relay connection to the pool.
+
+```rust
+pub fn add_url(
+    &mut self,
+    url: String,
+    wake_up: impl Fn() + Send + Sync + 'static,
+) -> Result<()>
+```
+
+<ParamField path="url" type="String" required>
+  WebSocket URL of the relay (e.g., "wss://relay.damus.io")
+</ParamField>
+
+<ParamField path="wake_up" type="impl Fn() + Send + Sync + 'static" required>
+  Callback function to trigger UI updates when events are received
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if successful, or an error if the connection fails
+</ResponseField>
+
+### remove_url()
+
+Removes a relay connection from the pool.
+
+```rust
+pub fn remove_url(&mut self, url: &str) -> Option<Relay>
+```
+
+<ParamField path="url" type="&str" required>
+  URL of the relay to remove
+</ParamField>
+
+<ResponseField name="return" type="Option<Relay>">
+  The removed Relay object if it existed, or None
+</ResponseField>
+
+### add_subscription()
+
+Adds a new Nostr subscription to all connected relays.
+
+```rust
+pub fn add_subscription(&mut self, sub: Subscription) -> Result<()>
+```
+
+<ParamField path="sub" type="Subscription" required>
+  Subscription object containing an ID and Nostr filters to apply
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if the subscription was sent successfully, or an error
+</ResponseField>
+
+#### Behavior
+
+1. Stores the subscription in the pool's subscription map
+2. Serializes the subscription as a Nostr REQ message
+3. Sends the subscription to all connected relays
+4. Automatically resends subscriptions when relays reconnect
+
+### send()
+
+Sends a WebSocket message to all connected relays.
+
+```rust
+pub fn send(&mut self, message: ewebsock::WsMessage) -> Result<()>
+```
+
+<ParamField path="message" type="ewebsock::WsMessage" required>
+  WebSocket message to broadcast (typically Text containing JSON)
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if sent to all connected relays successfully
+</ResponseField>
+
+<Note>
+  Only sends to relays with status `RelayStatus::Connected`. Disconnected relays are skipped.
+</Note>
+
+### try_recv()
+
+Attempts to receive pending messages from all relays.
+
+```rust
+pub fn try_recv(&mut self) -> Option<(String, String)>
+```
+
+<ResponseField name="return" type="Option<(String, String)>">
+  A tuple of (relay_url, message_text) if a message is available, or None
+</ResponseField>
+
+#### Behavior
+
+- Polls all relays for pending WebSocket events
+- Returns the first available message
+- Automatically handles connection events (Opened) by resubscribing
+- Responds to Ping messages with Pong automatically
+
+### keepalive()
+
+Performs periodic maintenance: reconnects disconnected relays and sends keepalive pings.
+
+```rust
+pub fn keepalive(&mut self, wake_up: impl Fn() + Send + Sync + Clone + 'static)
+```
+
+<ParamField path="wake_up" type="impl Fn() + Send + Sync + Clone + 'static" required>
+  Callback function to wake up the UI thread when events occur
+</ParamField>
+
+#### Behavior
+
+This method should be called regularly (e.g., in the UI update loop):
+
+1. **Reconnection** (every 5 seconds): Attempts to reconnect any disconnected relays
+2. **Keepalive pings** (every 30 seconds): Sends ping messages to all connected relays to keep connections alive
+
+<Note>
+  The reconnection interval is defined by the `RELAY_RECONNECT_SECONDS` constant (5 seconds).
+</Note>
+
+### send_auth()
+
+Sends an authentication event (NIP-42) to a specific relay.
+
+```rust
+pub fn send_auth(&mut self, relay_url: &str, event: Event) -> Result<()>
+```
+
+<ParamField path="relay_url" type="&str" required>
+  URL of the relay to authenticate with
+</ParamField>
+
+<ParamField path="event" type="Event" required>
+  Signed authentication event (kind 22242)
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if the AUTH message was sent successfully
+</ResponseField>
+
+### get_challenge()
+
+Retrieves the authentication challenge string from a relay.
+
+```rust
+pub fn get_challenge(&self, relay_url: &str) -> Option<String>
+```
+
+<ParamField path="relay_url" type="&str" required>
+  URL of the relay to get the challenge from
+</ParamField>
+
+<ResponseField name="return" type="Option<String>">
+  The challenge string if the relay has sent one, or None
+</ResponseField>
+
+### is_key_authenticated()
+
+Checks if a public key has been authenticated with a specific relay.
+
+```rust
+pub fn is_key_authenticated(&self, relay_url: &str, pubkey: &str) -> bool
+```
+
+<ParamField path="relay_url" type="&str" required>
+  URL of the relay to check
+</ParamField>
+
+<ParamField path="pubkey" type="&str" required>
+  Public key (hex string) to check authentication status for
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  true if the key is authenticated with this relay, false otherwise
+</ResponseField>
+
+### send_subscription_to_relay()
+
+Sends a specific subscription to a specific relay.
+
+```rust
+pub fn send_subscription_to_relay(&mut self, relay_url: &str, sub_id: &str) -> Result<()>
+```
+
+<ParamField path="relay_url" type="&str" required>
+  URL of the relay to send the subscription to
+</ParamField>
+
+<ParamField path="sub_id" type="&str" required>
+  ID of the subscription to send
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if successful, or an error if the relay or subscription doesn't exist
+</ResponseField>
+
+## Example usage
+
+```rust
+use hoot::relay::RelayPool;
+use hoot::relay::Subscription;
+use nostr::Filter;
+
+// Create a new relay pool
+let mut pool = RelayPool::new();
+
+// Add relays with a wake-up callback
+let wake_up = || { /* trigger UI repaint */ };
+pool.add_url("wss://relay.damus.io".to_string(), wake_up.clone())?;
+pool.add_url("wss://nos.lol".to_string(), wake_up.clone())?;
+
+// Create a subscription for mail events
+let filter = Filter::new()
+    .kind(nostr::Kind::GiftWrap)
+    .pubkey(my_pubkey);
+
+let subscription = Subscription {
+    id: "mail-sub".to_string(),
+    filters: vec![filter],
+};
+
+pool.add_subscription(subscription)?;
+
+// In your main loop:
+loop {
+    // Handle keepalive and reconnection
+    pool.keepalive(wake_up.clone());
+    
+    // Process incoming messages
+    while let Some((relay_url, message)) = pool.try_recv() {
+        println!("Received from {}: {}", relay_url, message);
+        // Process the message...
+    }
+}
+```
+
+## Authentication flow (NIP-42)
+
+For relays requiring authentication:
+
+```rust
+// 1. Relay sends AUTH challenge (handled automatically)
+if let Some(challenge) = pool.get_challenge(relay_url) {
+    // 2. Create authentication event
+    let auth_event = AccountManager::create_auth_event(
+        &keys,
+        relay_url,
+        &challenge
+    )?;
+    
+    // 3. Send AUTH response
+    pool.send_auth(relay_url, auth_event)?;
+    
+    // 4. Mark key as authenticated
+    pool.add_authenticated_key(relay_url, keys.public_key().to_hex());
+    
+    // 5. Retry any pending subscriptions
+    let pending_subs = pool.take_pending_auth_subscriptions(relay_url);
+    for sub_id in pending_subs {
+        pool.send_subscription_to_relay(relay_url, &sub_id)?;
+    }
+}
+```
+
+## Constants
+
+<ParamField path="RELAY_RECONNECT_SECONDS" type="u64">
+  Interval in seconds between reconnection attempts: `5`
+</ParamField>
+
+## Related
+
+- [MailMessage](/api/mail-message) - For creating messages to send through relays
+- [AccountManager](/api/account-manager) - For authentication and key management
+- [Database](/api/database) - For storing received events

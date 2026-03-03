@@ -1,0 +1,280 @@
+---
+title: Mail events
+description: Kind 2024 mail events, gift wrap generation, and message threading
+---
+
+Hoot uses custom kind 2024 events to implement email-like messaging over Nostr, with NIP-59 gift wrapping for privacy.
+
+## MailMessage structure
+
+From src/mail_event.rs:8:
+```rust
+pub const MAIL_EVENT_KIND: u16 = 2024;
+
+pub struct MailMessage {
+    pub id: Option<EventId>,
+    pub created_at: Option<i64>,
+    pub author: Option<PublicKey>,
+    pub to: Vec<PublicKey>,
+    pub cc: Vec<PublicKey>,
+    pub bcc: Vec<PublicKey>,
+    pub parent_events: Option<Vec<EventId>>,
+    pub subject: String,
+    pub content: String,
+    pub sender_nip05: Option<String>,
+}
+```
+
+Key features:
+- **Email-like addressing**: Separate `to`, `cc`, and `bcc` recipient lists
+- **Threading**: `parent_events` vector references previous messages in conversation
+- **Subject line**: Dedicated subject field for email-style organization
+- **NIP-05 identity**: Optional verified identity for sender
+- **Flexible metadata**: Optional `id`, `created_at`, and `author` for both creating and displaying messages
+
+## Event generation
+
+The `to_events()` method converts a MailMessage into gift-wrapped Nostr events:
+
+```rust
+pub fn to_events(&mut self, sending_keys: &Keys) -> HashMap<PublicKey, Event> {
+    let mut pubkeys_to_send_to: Vec<PublicKey> = Vec::new();
+    let mut tags: Vec<Tag> = Vec::new();
+
+    for pubkey in &self.to {
+        tags.push(Tag::public_key(*pubkey));
+        pubkeys_to_send_to.push(*pubkey);
+    }
+
+    for pubkey in &self.cc {
+        tags.push(Tag::custom(
+            TagKind::p(),
+            vec![pubkey.to_hex().as_str(), "cc"],
+        ));
+        pubkeys_to_send_to.push(*pubkey);
+    }
+
+    if let Some(parentEvents) = &self.parent_events {
+        for event in parentEvents {
+            tags.push(Tag::event(*event));
+        }
+    }
+
+    if let Some(nip05) = &self.sender_nip05 {
+        tags.push(Tag::custom(TagKind::custom("nip05"), vec![nip05.as_str()]));
+    }
+
+    tags.push(Tag::from_standardized(TagStandard::Subject(
+        self.subject.clone(),
+    )));
+
+    let base_event = EventBuilder::new(Kind::Custom(MAIL_EVENT_KIND), &self.content).tags(tags);
+
+    let mut event_list: HashMap<PublicKey, Event> = HashMap::new();
+    for pubkey in pubkeys_to_send_to {
+        let wrapped_event =
+            EventBuilder::gift_wrap(sending_keys, &pubkey, base_event.clone(), None)
+                .block_on()
+                .unwrap();
+        event_list.insert(pubkey, wrapped_event);
+    }
+
+    event_list
+}
+```
+
+## Tag structure
+
+The base kind 2024 event uses standard Nostr tags:
+
+### Recipient tags
+
+```rust
+// To recipients: standard p tag
+["p", "<recipient_pubkey>"]
+
+// CC recipients: p tag with "cc" marker
+["p", "<recipient_pubkey>", "cc"]
+
+// BCC recipients: Not included in base event tags
+// (gift wrap recipient only)
+```
+
+### Threading tags
+
+```rust
+// References to parent messages
+["e", "<parent_event_id>"]
+["e", "<another_parent_event_id>"]
+```
+
+Multiple parent events supported for complex threading scenarios.
+
+### Subject tag
+
+```rust
+// Subject line
+["subject", "Re: Previous conversation"]
+```
+
+### NIP-05 tag
+
+```rust
+// Sender's verified identity
+["nip05", "alice@example.com"]
+```
+
+## Gift wrap process
+
+Each message creates **one gift-wrapped event per recipient**:
+
+```rust
+for pubkey in pubkeys_to_send_to {
+    let wrapped_event =
+        EventBuilder::gift_wrap(sending_keys, &pubkey, base_event.clone(), None)
+            .block_on()
+            .unwrap();
+    event_list.insert(pubkey, wrapped_event);
+}
+```
+
+NIP-59 gift wrapping:
+1. **Base event**: Kind 2024 event with all tags and content
+2. **Seal**: Base event encrypted for recipient, signed by sender
+3. **Gift wrap**: Seal encrypted and wrapped by random ephemeral key
+4. **One per recipient**: Each recipient gets individually encrypted copy
+
+The returned `HashMap<PublicKey, Event>` maps each recipient to their gift-wrapped event.
+
+## BCC handling
+
+BCC (blind carbon copy) recipients:
+- **Not in tags**: BCC pubkeys excluded from base event's `p` tags
+- **Still wrapped**: BCC recipients still get gift-wrapped copies
+- **Privacy preserved**: Other recipients cannot see BCC recipients
+
+```rust
+// BCC recipients added to send list but not to tags
+for pubkey in &self.bcc {
+    pubkeys_to_send_to.push(*pubkey);
+    // No tag added!
+}
+```
+
+## Threading implementation
+
+Threading uses event references:
+
+```rust
+if let Some(parentEvents) = &self.parent_events {
+    for event in parentEvents {
+        tags.push(Tag::event(*event));
+    }
+}
+```
+
+Thread reconstruction:
+1. Messages reference parent event IDs in `e` tags
+2. Database queries walk these references recursively
+3. UI displays messages in chronological conversation order
+4. Multiple parent references support branching conversations
+
+From the database layer, threads are reconstructed using recursive CTEs that walk both parent and child references.
+
+## Event flow
+
+### Sending a message
+
+1. User composes message in `ComposeWindow`
+2. UI creates `MailMessage` struct with recipients and content
+3. `to_events()` generates one gift-wrapped event per recipient
+4. Each wrapped event sent to all connected relays
+5. Relays distribute gift wraps to recipient's relay lists
+
+### Receiving a message
+
+1. Relay sends gift wrap event (kind 1059) to client
+2. `AccountManager::unwrap_gift_wrap()` decrypts the gift wrap
+3. Inner rumor (kind 2024 event) extracted
+4. Database stores rumor with mapping to original gift wrap
+5. UI displays message in appropriate mailbox
+
+## Async handling
+
+Gift wrap operations are async but called from sync context:
+
+```rust
+let wrapped_event =
+    EventBuilder::gift_wrap(sending_keys, &pubkey, base_event.clone(), None)
+        .block_on()  // pollster::FutureExt
+        .unwrap();
+```
+
+Uses `pollster::block_on()` to handle async Nostr crypto operations in synchronous event generation.
+
+## Privacy features
+
+Kind 2024 + NIP-59 provides strong privacy:
+
+1. **Encrypted content**: Message body encrypted in seal
+2. **Encrypted metadata**: Recipients, subject encrypted in seal
+3. **Sender privacy**: Gift wrap uses random ephemeral key
+4. **Timing obfuscation**: Gift wrap timestamps randomized (TODO)
+5. **Individual encryption**: Each recipient gets unique encrypted copy
+
+From the code comment at src/mail_event.rs:60:
+```rust
+// TODO: randomize gift wrap created_ats
+```
+
+Future enhancement will add timestamp randomization for additional privacy.
+
+## Kind 2024 vs standard Nostr
+
+Kind 2024 differs from standard Nostr events:
+
+- **Not kind 1**: Regular text notes visible to followers
+- **Not DMs**: Old-style encrypted DMs (deprecated)
+- **Email-like**: To/CC/BCC, subject lines, threading
+- **Always wrapped**: Never sent unwrapped (unlike kind 1)
+- **Custom kind**: Specific to Hoot and compatible clients
+
+This enables true email functionality while maintaining Nostr's decentralized architecture.
+
+## Integration with UI
+
+From src/ui/compose_window.rs:223:
+```rust
+let mut msg = MailMessage {
+    id: None,
+    created_at: None,
+    author: None,
+    to: recipient_keys,
+    cc: vec![],
+    bcc: vec![],
+    parent_events: Some(state.parent_events.clone()),
+    subject: state.subject.clone(),
+    content: state.content.clone(),
+    sender_nip05: state.selected_nip05.clone(),
+};
+let events_to_send = msg.to_events(&state.selected_account.clone().unwrap());
+
+for event in events_to_send {
+    match serde_json::to_string(&ClientMessage::Event { event: event.1 }) {
+        Ok(v) => match app.relays.send(ewebsock::WsMessage::Text(v)) {
+            Ok(r) => r,
+            Err(e) => error!("could not send event to relays: {}", e),
+        },
+        Err(e) => error!("could not serialize event: {}", e),
+    };
+}
+```
+
+The compose window:
+1. Collects message data from user input
+2. Creates `MailMessage` struct
+3. Generates wrapped events with `to_events()`
+4. Sends each event to relay pool
+5. Relay pool broadcasts to all connected relays
+
+The mail event system provides the foundation for Hoot's email-like experience over Nostr's decentralized infrastructure.

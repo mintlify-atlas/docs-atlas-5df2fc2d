@@ -1,0 +1,183 @@
+---
+title: Contributing to Hoot
+description: Guidelines for contributing code, reporting issues, and submitting pull requests
+---
+
+## Getting started
+
+Contributions to Hoot are welcome! Whether you're fixing bugs, adding features, or improving documentation, your help is appreciated.
+
+### Setting up your development environment
+
+<Steps>
+  <Step title="Fork and clone the repository">
+    ```bash
+    git clone <your-fork-url>
+    cd hoot
+    ```
+  </Step>
+
+  <Step title="Set up the development environment">
+    <CodeGroup>
+      ```bash Standard Rust
+      cargo build
+      cargo test
+      ```
+
+      ```bash Using Nix
+      nix develop
+      cargo build
+      cargo test
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create a feature branch">
+    ```bash
+    git checkout -b feature/your-feature-name
+    ```
+  </Step>
+</Steps>
+
+## Code style and standards
+
+### Rust code formatting
+
+Hoot uses the standard Rust formatting tools. Before submitting a pull request:
+
+```bash
+# Format your code
+cargo fmt
+
+# Check for common issues
+cargo clippy -- -D warnings
+```
+
+### Code quality checks
+
+The CI pipeline runs the following checks on all pull requests:
+
+- **Build verification** - Code must compile on Linux, Windows, and macOS
+- **Tests** - All tests must pass with `cargo test --verbose`
+- **Clippy** - No clippy warnings allowed (`cargo clippy --all-targets -- --deny warnings`)
+- **Formatting** - Code must be formatted with `cargo fmt`
+- **Documentation** - Rustdoc must build without warnings
+
+If you're using Nix, you can run all checks locally:
+
+```bash
+nix flake check
+```
+
+## Testing
+
+### Running tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run a specific test
+cargo test <test_name>
+
+# Run tests with output
+cargo test -- --nocapture
+```
+
+### Writing tests
+
+When adding new functionality:
+
+1. Add unit tests in the same file as your implementation
+2. Add integration tests in the `tests/` directory if appropriate
+3. Test both success and error cases
+4. Ensure your tests are deterministic and don't rely on external services
+
+## Architecture guidelines
+
+### Core components
+
+Before making changes, familiarize yourself with Hoot's architecture:
+
+- **Main application** (`main.rs`) - Application state and event loop
+- **Relay system** (`relay/`) - WebSocket connections to Nostr relays
+- **Database** (`db.rs`) - SQLite with SQLCipher encryption
+- **Key storage** (`keystorage/`) - Platform-specific secure storage
+- **Mail events** (`mail_event.rs`) - Custom kind 2024 events and NIP-59 gift wrapping
+- **UI system** (`ui/`) - Modular egui-based interface
+
+See `CLAUDE.md` in the source repository for detailed architecture documentation.
+
+### Threading model
+
+Be aware of Hoot's threading model when making changes:
+
+- Main UI thread runs immediate-mode egui
+- WebSocket connections use `ewebsock` with wake-up callbacks
+- Profile image fetching uses `std::thread::spawn` with `reqwest::blocking`
+- Gift wrap operations use `pollster` to block on async Nostr operations
+- Database operations are synchronous (rusqlite)
+
+## Pull request process
+
+<Steps>
+  <Step title="Ensure all checks pass">
+    Run the following before submitting:
+    
+    ```bash
+    cargo fmt
+    cargo clippy -- -D warnings
+    cargo test
+    cargo build --release
+    ```
+  </Step>
+
+  <Step title="Write a clear PR description">
+    Your pull request should include:
+    
+    - A clear description of what the PR does
+    - Why the change is needed
+    - Any breaking changes or migration notes
+    - Screenshots for UI changes
+    - References to related issues
+  </Step>
+
+  <Step title="Submit the pull request">
+    Push your branch and create a pull request against the `main` branch:
+    
+    ```bash
+    git push origin feature/your-feature-name
+    ```
+  </Step>
+
+  <Step title="Address review feedback">
+    Respond to any code review comments and make requested changes. Push new commits to your branch - they will automatically appear in the PR.
+  </Step>
+</Steps>
+
+## Reporting issues
+
+When reporting bugs or requesting features:
+
+1. **Search existing issues** to avoid duplicates
+2. **Provide context** - What were you trying to do?
+3. **Include steps to reproduce** for bugs
+4. **Share your environment** - OS, Rust version, Hoot version
+5. **Add logs if available** - Hoot logs are written to stdout
+
+## Code of conduct
+
+Be respectful and professional in all interactions. We're building software together and everyone's contribution matters.
+
+## Getting help
+
+If you need help with your contribution:
+
+- Read the `CLAUDE.md` file in the source repository for architecture details
+- Check the existing codebase for similar patterns
+- Ask questions in your pull request
+- Reach out to the maintainer: Jack Chakany at jack@chakany.systems
+
+## License
+
+By contributing to Hoot, you agree that your contributions will be licensed under the same license as the project.

@@ -1,0 +1,303 @@
+---
+title: Features
+description: Explore Hoot's powerful features including encrypted messaging, contact management, threading, and secure key storage.
+---
+
+# Features
+
+Hoot combines familiar email functionality with the security and decentralization of the Nostr protocol. Here are the key features that make Hoot a powerful communication tool.
+
+## Core features
+
+<CardGroup cols={2}>
+  <Card
+    title="End-to-end encryption"
+    icon="lock"
+  >
+    All private messages use NIP-59 gift wrapping for end-to-end encryption. Each recipient receives a unique encrypted event, ensuring perfect forward secrecy.
+  </Card>
+  
+  <Card
+    title="Multi-relay support"
+    icon="network-wired"
+  >
+    Connect to multiple Nostr relays simultaneously with automatic reconnection (5s intervals) and keepalive pings (30s) to maintain healthy connections.
+  </Card>
+  
+  <Card
+    title="Encrypted local storage"
+    icon="database"
+  >
+    Messages stored locally in SQLite with bundled SQLCipher encryption. Your data is encrypted at rest and only accessible with your credentials.
+  </Card>
+  
+  <Card
+    title="Secure key management"
+    icon="key"
+  >
+    Platform-specific secure storage for Nostr keypairs: macOS Keychain, Windows Credential Manager, or Linux Secret Service API.
+  </Card>
+  
+  <Card
+    title="Email-like interface"
+    icon="envelope"
+  >
+    Familiar inbox, compose, and folder structure with to/cc/bcc support, subjects, and threaded conversations.
+  </Card>
+  
+  <Card
+    title="Contact management"
+    icon="address-book"
+  >
+    Manage contacts with profile metadata, display names, and avatar images fetched asynchronously from Nostr events.
+  </Card>
+  
+  <Card
+    title="Message threading"
+    icon="comments"
+  >
+    Track conversation threads with parent event references. Thread reconstruction uses recursive queries to build complete conversation trees.
+  </Card>
+  
+  <Card
+    title="Native performance"
+    icon="gauge-high"
+  >
+    Built with Rust and egui for a fast, lightweight desktop application. Immediate-mode GUI ensures responsive performance.
+  </Card>
+</CardGroup>
+
+## Message encryption
+
+Hoot uses NIP-59 gift wrap for all private messages:
+
+```rust
+// From mail_event.rs:5
+pub const MAIL_EVENT_KIND: u16 = 2024;
+
+// From mail_event.rs:61
+let wrapped_event =
+    EventBuilder::gift_wrap(sending_keys, &pubkey, base_event.clone(), None)
+        .block_on()
+        .unwrap();
+```
+
+<Info>
+  Gift wrapping creates a separate encrypted event for each recipient. This means:
+  - Recipients cannot see who else received the message
+  - Each encrypted event uses unique keys
+  - Compromise of one key doesn't affect other recipients
+</Info>
+
+## Relay management
+
+The relay pool manages WebSocket connections with robust error handling:
+
+```rust
+// From relay/pool.rs:11
+pub const RELAY_RECONNECT_SECONDS: u64 = 5;
+
+// From relay/pool.rs:40
+if now.duration_since(self.last_reconnect_attempt)
+    >= Duration::from_secs(RELAY_RECONNECT_SECONDS)
+{
+    for relay in self.relays.values_mut() {
+        if relay.status != RelayStatus::Connected {
+            relay.status = RelayStatus::Connecting;
+            relay.reconnect(wake_up.clone());
+        }
+    }
+}
+```
+
+<Note>
+  Disconnected relays automatically reconnect every 5 seconds. Connected relays receive keepalive pings every 30 seconds to prevent timeout.
+</Note>
+
+## Database architecture
+
+Hoot stores all data locally in an encrypted SQLite database:
+
+- **Events table**: Stores raw Nostr events as JSON with generated virtual columns for efficient querying
+- **Profile metadata**: Caches Nostr metadata (kind 0) events for contact information
+- **Gift wrap handling**: Automatically unwraps incoming encrypted events and stores the inner rumor
+- **Thread reconstruction**: Uses recursive CTEs to build complete conversation threads
+
+<Warning>
+  The database file is encrypted with SQLCipher. Make sure to back up your database file and remember your password - lost credentials cannot be recovered.
+</Warning>
+
+## Secure key storage
+
+The `AccountManager` coordinates secure storage using platform-specific APIs:
+
+```rust
+// From main.rs:70
+account_manager: account_manager::AccountManager,
+pub active_account: Option<nostr::Keys>,
+```
+
+Key storage by platform:
+
+- **macOS**: Keychain API via `security-framework` crate
+- **Windows**: Credential Manager for secure credential storage
+- **Linux**: Secret Service API with file-based fallback for compatibility
+
+<Info>
+  Private keys never leave your device. All encryption and signing operations happen locally.
+</Info>
+
+## Profile metadata
+
+Contact profiles are lazy-loaded and cached:
+
+```rust
+// From main.rs:77
+profile_metadata: HashMap<String, profile_metadata::ProfileOption>,
+```
+
+Profile loading flow:
+1. Check local cache first
+2. If not cached, return `ProfileOption::Waiting` and query relays
+3. Cache metadata when received from relays
+4. Persist to database for future use
+5. Fetch contact images asynchronously in background threads
+
+## Message composition
+
+Hoot supports full email-style composition:
+
+```rust
+// From mail_event.rs:8
+pub struct MailMessage {
+    pub to: Vec<PublicKey>,
+    pub cc: Vec<PublicKey>,
+    pub bcc: Vec<PublicKey>,
+    pub parent_events: Option<Vec<EventId>>,
+    pub subject: String,
+    pub content: String,
+    pub sender_nip05: Option<String>,
+}
+```
+
+### Threading support
+
+Messages can reference parent events to create conversation threads:
+
+```rust
+// From mail_event.rs:41
+if let Some(parentEvents) = &self.parent_events {
+    for event in parentEvents {
+        tags.push(Tag::event(*event));
+    }
+}
+```
+
+<Note>
+  Thread reconstruction walks both parent and child references recursively to build complete conversation trees, even with complex reply patterns.
+</Note>
+
+## User interface
+
+Built with egui for immediate-mode GUI:
+
+```rust
+// From main.rs:62
+pub struct Hoot {
+    pub page: Page,
+    pub focused_post: String,
+    status: HootStatus,
+    state: HootState,
+    relays: relay::RelayPool,
+    events: Vec<nostr::Event>,
+}
+```
+
+UI features:
+- **Page-based navigation**: Inbox, Drafts, Settings, Contacts, Trash, Junk, Requests
+- **Multiple compose windows**: Open multiple drafts simultaneously, tracked by unique IDs
+- **Custom theming**: Custom color scheme with Inter font embedded
+- **Responsive layout**: Sidebar navigation with main content area
+
+## Advanced features
+
+### NIP-05 verification
+
+Hoot includes NIP-05 verification and resolution:
+
+```rust
+// From main.rs:80
+nip05_verifier: nip05::Nip05Verifier,
+nip05_resolver: nip05::Nip05Resolver,
+```
+
+Verify identities using DNS-based NIP-05 identifiers for trusted contacts.
+
+### Draft management
+
+Save message drafts locally:
+
+```rust
+// From main.rs:79
+drafts: Vec<db::Draft>,
+```
+
+Drafts are stored in the local database and can be resumed at any time.
+
+### Contact organization
+
+Manage contacts with the dedicated contacts manager:
+
+```rust
+// From main.rs:78
+pub contacts_manager: ContactsManager,
+```
+
+Organize contacts, view profiles, and manage your address book.
+
+## Development features
+
+### Profiling support
+
+Enable profiling for performance analysis:
+
+```bash
+cargo build --features profiling
+cargo run --features profiling
+```
+
+When enabled:
+- Starts puffin server on `127.0.0.1:8585`
+- Automatically launches `puffin_viewer`
+- Track performance metrics in real-time
+
+<Info>
+  Profiling is available through the optional `profiling` feature flag, which includes the puffin profiler and puffin_http server.
+</Info>
+
+### Logging
+
+Built-in structured logging with tracing:
+
+```rust
+// From main.rs:25
+let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stdout());
+tracing_subscriber::fmt()
+    .with_writer(non_blocking)
+    .with_max_level(Level::DEBUG)
+    .init();
+```
+
+Debug-level logging helps troubleshoot issues during development.
+
+## Platform support
+
+Hoot runs natively on:
+
+- **Linux**: Full support with Secret Service API key storage
+- **macOS**: Native Keychain integration
+- **Windows**: Credential Manager integration
+
+<Note>
+  All platforms use the same core codebase with platform-specific adapters for secure key storage.
+</Note>

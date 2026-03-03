@@ -1,0 +1,656 @@
+---
+title: Database
+description: SQLite database interface for storing events, messages, contacts, and profile metadata
+---
+
+The `Db` struct provides a comprehensive interface to Hoot's SQLite database, which stores Nostr events, email threads, contact information, and profile metadata with encryption support via SQLCipher.
+
+## Initialization
+
+### new()
+
+Creates a new database connection at the specified path.
+
+```rust
+pub fn new(path: PathBuf) -> Result<Self>
+```
+
+<ParamField path="path" type="PathBuf" required>
+  File path where the database should be created or opened
+</ParamField>
+
+<ResponseField name="return" type="Result<Db>">
+  A new Db instance connected to the database file
+</ResponseField>
+
+### new_in_memory()
+
+Creates an in-memory database for testing purposes.
+
+```rust
+pub fn new_in_memory() -> Result<Self>
+```
+
+<ResponseField name="return" type="Result<Db>">
+  A new Db instance with an in-memory database (not persisted)
+</ResponseField>
+
+### unlock_with_password()
+
+Unlocks an encrypted database and applies migrations.
+
+```rust
+pub fn unlock_with_password(&mut self, password: String) -> Result<()>
+```
+
+<ParamField path="password" type="String" required>
+  SQLCipher encryption password
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if unlocked successfully, or an error if the password is incorrect
+</ResponseField>
+
+<Warning>
+  If the password is incorrect, this will return a `NotADatabase` error. Use `format_unlock_error()` to convert this into a user-friendly message.
+</Warning>
+
+### is_unlocked()
+
+Checks if the database is currently unlocked and accessible.
+
+```rust
+pub fn is_unlocked(&self) -> bool
+```
+
+<ResponseField name="return" type="bool">
+  true if the database can be queried, false if locked or inaccessible
+</ResponseField>
+
+### is_initialized()
+
+Checks if database migrations have been applied.
+
+```rust
+pub fn is_initialized(&self) -> bool
+```
+
+<ResponseField name="return" type="bool">
+  true if tables exist, false if the schema hasn't been set up
+</ResponseField>
+
+## Event storage
+
+### store_event()
+
+Stores a Nostr event in the database, optionally unwrapping gift-wrapped events.
+
+```rust
+pub fn store_event(
+    &self,
+    event: &Event,
+    unwrapped: Option<&UnwrappedGift>,
+    gift_wrap_recipient: Option<&str>,
+) -> Result<()>
+```
+
+<ParamField path="event" type="&Event" required>
+  The Nostr event to store
+</ParamField>
+
+<ParamField path="unwrapped" type="Option<&UnwrappedGift>">
+  If the event is a gift wrap, the unwrapped contents (rumor) to store instead
+</ParamField>
+
+<ParamField path="gift_wrap_recipient" type="Option<&str>">
+  Public key of the gift wrap recipient (for tracking)
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if stored successfully, or an error
+</ResponseField>
+
+#### Behavior
+
+- If `unwrapped` is provided, stores the rumor instead of the wrapper
+- Creates a mapping in `gift_wrap_map` table linking wrap_id to inner_id
+- Uses `INSERT OR IGNORE` to skip duplicate events
+- Checks deletion markers before storing
+- Verifies that seal signer matches rumor pubkey for security
+
+### has_event()
+
+Checks if an event ID exists in the database.
+
+```rust
+pub fn has_event(&self, event_id: &str) -> Result<bool>
+```
+
+<ParamField path="event_id" type="&str" required>
+  Event ID (hex string) to check
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  true if the event exists in the events table
+</ResponseField>
+
+### gift_wrap_exists()
+
+Checks if a gift wrap ID has been processed.
+
+```rust
+pub fn gift_wrap_exists(&self, wrap_id: &str) -> Result<bool>
+```
+
+<ParamField path="wrap_id" type="&str" required>
+  Gift wrap event ID to check
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  true if the wrap ID exists in the gift_wrap_map table
+</ResponseField>
+
+## Message queries
+
+### get_email_thread()
+
+Fetches an entire email thread starting from any message in the thread.
+
+```rust
+pub fn get_email_thread(&self, event_id: &str) -> Result<Vec<MailMessage>>
+```
+
+<ParamField path="event_id" type="&str" required>
+  Event ID of any message in the thread
+</ParamField>
+
+<ResponseField name="return" type="Result<Vec<MailMessage>>">
+  Vector of MailMessage objects sorted by creation time (oldest first)
+</ResponseField>
+
+#### Behavior
+
+Uses recursive SQL queries to:
+1. Walk up the thread to find the root message
+2. Walk down from the root to find all replies
+3. Return all messages in chronological order
+4. Exclude trashed and deleted messages
+
+### get_top_level_messages()
+
+Retrieves all root-level messages for the inbox view.
+
+```rust
+pub fn get_top_level_messages(&self) -> Result<Vec<TableEntry>>
+```
+
+<ResponseField name="return" type="Result<Vec<TableEntry>>">
+  Vector of TableEntry objects representing conversation threads
+</ResponseField>
+
+#### Filtering logic
+
+Includes messages from:
+- Your own accounts (pubkeys table)
+- Contacts (contacts table)
+- Allowed senders (sender_status table with status='allowed')
+- People you've messaged before (derived from sent messages)
+
+Excludes:
+- Deleted messages
+- Trashed messages
+- Messages with parent references (replies)
+- Junk senders
+
+### get_trash_messages()
+
+Retrieves all messages in the trash.
+
+```rust
+pub fn get_trash_messages(&self) -> Result<Vec<TableEntry>>
+```
+
+<ResponseField name="return" type="Result<Vec<TableEntry>>">
+  Vector of trashed messages sorted by trash date (newest first)
+</ResponseField>
+
+### get_request_messages()
+
+Retrieves messages from unknown senders awaiting approval.
+
+```rust
+pub fn get_request_messages(&self) -> Result<Vec<TableEntry>>
+```
+
+<ResponseField name="return" type="Result<Vec<TableEntry>>">
+  Vector of messages from senders not in contacts, pubkeys, or sender_status
+</ResponseField>
+
+### get_junk_messages()
+
+Retrieves messages from blocked senders.
+
+```rust
+pub fn get_junk_messages(&self) -> Result<Vec<TableEntry>>
+```
+
+<ResponseField name="return" type="Result<Vec<TableEntry>>">
+  Vector of messages from senders marked as 'junked' in sender_status
+</ResponseField>
+
+### search_messages()
+
+Searches messages by content, subject, or sender name.
+
+```rust
+pub fn search_messages(&self, query: &str) -> Result<Vec<TableEntry>>
+```
+
+<ParamField path="query" type="&str" required>
+  Search query string (case-insensitive, supports partial matches)
+</ParamField>
+
+<ResponseField name="return" type="Result<Vec<TableEntry>>">
+  Up to 100 matching messages sorted by date (newest first)
+</ResponseField>
+
+#### Search scope
+
+- Message content
+- Subject line
+- Sender name and display name (from profile metadata)
+- Only searches mail events (kind 2024)
+- Excludes trash and junk
+- Only searches messages from contacts, allowed senders, or your accounts
+
+## Contact management
+
+### get_contacts()
+
+Retrieves all contacts with their profile metadata.
+
+```rust
+pub fn get_contacts(&self) -> Result<Vec<(String, ProfileMetadata)>>
+```
+
+<ResponseField name="return" type="Result<Vec<(String, ProfileMetadata)>>">
+  Vector of tuples containing (pubkey, ProfileMetadata) sorted by display name
+</ResponseField>
+
+### get_user_contacts()
+
+Retrieves contacts from the contacts table with optional petnames.
+
+```rust
+pub fn get_user_contacts(&self) -> Result<Vec<(String, Option<String>, ProfileMetadata)>>
+```
+
+<ResponseField name="return" type="Result<Vec<(String, Option<String>, ProfileMetadata)>>">
+  Vector of tuples: (pubkey, petname, ProfileMetadata) sorted by petname/display name
+</ResponseField>
+
+### save_contact()
+
+Adds a contact or updates their petname.
+
+```rust
+pub fn save_contact(&self, pubkey: &str, petname: Option<&str>) -> Result<()>
+```
+
+<ParamField path="pubkey" type="&str" required>
+  Public key (hex) of the contact
+</ParamField>
+
+<ParamField path="petname" type="Option<&str>">
+  Optional custom name for the contact
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if saved successfully
+</ResponseField>
+
+### delete_contact()
+
+Removes a contact from the contacts table.
+
+```rust
+pub fn delete_contact(&self, pubkey: &str) -> Result<()>
+```
+
+<ParamField path="pubkey" type="&str" required>
+  Public key of the contact to remove
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if deleted successfully
+</ResponseField>
+
+### is_contact()
+
+Checks if a public key is in the contacts table.
+
+```rust
+pub fn is_contact(&self, pubkey: &str) -> Result<bool>
+```
+
+<ParamField path="pubkey" type="&str" required>
+  Public key to check
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  true if the pubkey exists in the contacts table
+</ResponseField>
+
+### get_profile_metadata()
+
+Retrieves cached profile metadata for a public key.
+
+```rust
+pub fn get_profile_metadata(&self, pubkey: &str) -> Result<Option<ProfileMetadata>>
+```
+
+<ParamField path="pubkey" type="&str" required>
+  Public key (hex) to get metadata for
+</ParamField>
+
+<ResponseField name="return" type="Result<Option<ProfileMetadata>>">
+  ProfileMetadata if cached, or None if not found
+</ResponseField>
+
+### update_profile_metadata()
+
+Updates the profile metadata cache if the event is newer.
+
+```rust
+pub fn update_profile_metadata(&self, event: Event) -> Result<()>
+```
+
+<ParamField path="event" type="Event" required>
+  Nostr kind 0 metadata event
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if updated (only updates if newer than existing)
+</ResponseField>
+
+## Deletion and trash
+
+### record_deletions()
+
+Marks events as deleted and removes them from the database.
+
+```rust
+pub fn record_deletions(
+    &mut self,
+    event_ids: &[String],
+    author_pubkey: Option<&str>,
+    source_event_id: Option<&str>,
+) -> Result<()>
+```
+
+<ParamField path="event_ids" type="&[String]" required>
+  List of event IDs to delete
+</ParamField>
+
+<ParamField path="author_pubkey" type="Option<&str>">
+  If specified, only deletes events authored by this pubkey
+</ParamField>
+
+<ParamField path="source_event_id" type="Option<&str>">
+  Event ID of the deletion request (kind 5)
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if deletion markers were recorded successfully
+</ResponseField>
+
+### record_trash()
+
+Moves events to trash with an expiration time.
+
+```rust
+pub fn record_trash(&mut self, event_ids: &[String], purge_after: i64) -> Result<()>
+```
+
+<ParamField path="event_ids" type="&[String]" required>
+  List of event IDs to trash
+</ParamField>
+
+<ParamField path="purge_after" type="i64" required>
+  Unix timestamp when these events should be permanently deleted
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if moved to trash successfully
+</ResponseField>
+
+### restore_from_trash()
+
+Restores a trashed event back to the inbox.
+
+```rust
+pub fn restore_from_trash(&mut self, event_id: &str) -> Result<()>
+```
+
+<ParamField path="event_id" type="&str" required>
+  Event ID to restore
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if restored successfully
+</ResponseField>
+
+### purge_expired_trash()
+
+Permanently deletes events whose trash expiration time has passed.
+
+```rust
+pub fn purge_expired_trash(&mut self, now: i64) -> Result<Vec<String>>
+```
+
+<ParamField path="now" type="i64" required>
+  Current unix timestamp
+</ParamField>
+
+<ResponseField name="return" type="Result<Vec<String>>">
+  List of event IDs that were permanently deleted
+</ResponseField>
+
+### is_deleted()
+
+Checks if an event has been marked as deleted.
+
+```rust
+pub fn is_deleted(&self, event_id: &str, author_pubkey: Option<&str>) -> Result<bool>
+```
+
+<ParamField path="event_id" type="&str" required>
+  Event ID to check
+</ParamField>
+
+<ParamField path="author_pubkey" type="Option<&str>">
+  Optional author pubkey for scoped deletion checks
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  true if the event is marked as deleted
+</ResponseField>
+
+### is_trashed()
+
+Checks if an event is in the trash.
+
+```rust
+pub fn is_trashed(&self, event_id: &str) -> Result<bool>
+```
+
+<ParamField path="event_id" type="&str" required>
+  Event ID to check
+</ParamField>
+
+<ResponseField name="return" type="Result<bool>">
+  true if the event is in trash_events table
+</ResponseField>
+
+## Account management
+
+### get_pubkeys()
+
+Retrieves all saved account public keys.
+
+```rust
+pub fn get_pubkeys(&self) -> Result<Vec<String>>
+```
+
+<ResponseField name="return" type="Result<Vec<String>>">
+  Vector of public keys (hex strings) for all accounts
+</ResponseField>
+
+### add_pubkey()
+
+Adds a public key to the pubkeys table.
+
+```rust
+pub fn add_pubkey(&self, pubkey: String) -> Result<()>
+```
+
+<ParamField path="pubkey" type="String" required>
+  Public key (hex) to add
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if added successfully
+</ResponseField>
+
+### delete_pubkey()
+
+Removes a public key from the pubkeys table.
+
+```rust
+pub fn delete_pubkey(&self, pubkey: String) -> Result<()>
+```
+
+<ParamField path="pubkey" type="String" required>
+  Public key (hex) to remove
+</ParamField>
+
+<ResponseField name="return" type="Result<()>">
+  Ok(()) if deleted successfully
+</ResponseField>
+
+## Example usage
+
+### Storing a received message
+
+```rust
+// Store a gift-wrapped message
+if event.kind == Kind::GiftWrap {
+    match account_manager.unwrap_gift_wrap(&event) {
+        Ok(unwrapped) => {
+            db.store_event(
+                &event,
+                Some(&unwrapped),
+                Some(&recipient_pubkey)
+            )?;
+        }
+        Err(e) => eprintln!("Failed to unwrap: {}", e),
+    }
+} else {
+    // Store regular event
+    db.store_event(&event, None, None)?;
+}
+```
+
+### Loading inbox messages
+
+```rust
+// Get all top-level conversations
+let messages = db.get_top_level_messages()?;
+
+for msg in messages {
+    println!("[{}] {} - {}", msg.created_at, msg.subject, msg.pubkey);
+    println!("  Thread size: {} messages", msg.thread_count);
+}
+```
+
+### Viewing a conversation thread
+
+```rust
+// Load entire thread when user clicks a message
+let thread = db.get_email_thread(&selected_message_id)?;
+
+for message in thread {
+    println!("From: {:?}", message.author);
+    println!("Date: {:?}", message.created_at);
+    println!("Subject: {}", message.subject);
+    println!("Content: {}\n", message.content);
+}
+```
+
+### Managing contacts
+
+```rust
+// Add a new contact
+db.save_contact(&pubkey, Some("Alice"))?;
+
+// Check if someone is a contact
+if db.is_contact(&sender_pubkey)? {
+    println!("Message from contact");
+}
+
+// Get all contacts with metadata
+let contacts = db.get_user_contacts()?;
+for (pubkey, petname, metadata) in contacts {
+    let name = petname
+        .or(metadata.display_name)
+        .or(metadata.name)
+        .unwrap_or(pubkey.clone());
+    println!("Contact: {}", name);
+}
+```
+
+### Searching messages
+
+```rust
+// Search for messages containing "invoice"
+let results = db.search_messages("invoice")?;
+println!("Found {} messages", results.len());
+
+for result in results {
+    println!("[{}] {}", result.subject, result.content);
+}
+```
+
+### Trash management
+
+```rust
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// Move message to trash (30 day expiration)
+let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+let purge_after = now + (30 * 24 * 60 * 60); // 30 days
+db.record_trash(&[message_id.clone()], purge_after)?;
+
+// Restore from trash
+db.restore_from_trash(&message_id)?;
+
+// Purge expired trash (call periodically)
+let deleted = db.purge_expired_trash(now)?;
+println!("Permanently deleted {} messages", deleted.len());
+```
+
+## Database schema notes
+
+- **events table**: Stores raw Nostr events as JSON with virtual columns for efficient querying
+- **gift_wrap_map**: Maps gift wrap IDs to inner rumor IDs
+- **profile_metadata**: Caches kind 0 metadata events (name, picture, NIP-05)
+- **contacts**: User's contact list with optional petnames
+- **sender_status**: Tracks allowed/junked senders
+- **trash_events**: Soft-deleted events with expiration timestamps
+- **deleted_events**: Deletion markers for permanently removed events
+
+## Related
+
+- [MailMessage](/api/mail-message) - For message structure
+- [AccountManager](/api/account-manager) - For key management
+- [RelayPool](/api/relay-pool) - For receiving events to store

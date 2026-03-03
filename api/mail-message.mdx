@@ -1,0 +1,147 @@
+---
+title: MailMessage
+description: Structure for creating and converting email messages to Nostr gift-wrapped events
+---
+
+The `MailMessage` struct represents an email message in Hoot and provides functionality to convert messages into Nostr gift-wrapped events for secure transmission over the Nostr protocol.
+
+## Struct fields
+
+The `MailMessage` struct contains the following fields:
+
+<ParamField path="id" type="Option<EventId>">
+  Optional Nostr event ID for the message
+</ParamField>
+
+<ParamField path="created_at" type="Option<i64>">
+  Unix timestamp when the message was created
+</ParamField>
+
+<ParamField path="author" type="Option<PublicKey>">
+  Public key of the message author
+</ParamField>
+
+<ParamField path="to" type="Vec<PublicKey>">
+  List of recipient public keys (To field)
+</ParamField>
+
+<ParamField path="cc" type="Vec<PublicKey>">
+  List of CC recipient public keys
+</ParamField>
+
+<ParamField path="bcc" type="Vec<PublicKey>">
+  List of BCC recipient public keys
+</ParamField>
+
+<ParamField path="parent_events" type="Option<Vec<EventId>>">
+  Optional list of parent event IDs for threading. Used to maintain conversation history.
+</ParamField>
+
+<ParamField path="subject" type="String" required>
+  Email subject line
+</ParamField>
+
+<ParamField path="content" type="String" required>
+  Message body content
+</ParamField>
+
+<ParamField path="sender_nip05" type="Option<String>">
+  Optional NIP-05 identifier for the sender (e.g., "user@domain.com")
+</ParamField>
+
+## Methods
+
+### to_events()
+
+Converts the `MailMessage` into a HashMap of gift-wrapped Nostr events, one for each recipient.
+
+```rust
+pub fn to_events(&mut self, sending_keys: &Keys) -> HashMap<PublicKey, Event>
+```
+
+<ParamField path="sending_keys" type="&Keys" required>
+  The sender's Nostr keypair used to sign and encrypt the events
+</ParamField>
+
+<ResponseField name="return" type="HashMap<PublicKey, Event>">
+  A HashMap mapping each recipient's public key to their corresponding gift-wrapped event (kind 1059)
+</ResponseField>
+
+#### Behavior
+
+This method performs the following operations:
+
+1. Creates tags for all recipients in the `to` field (standard p tags)
+2. Creates custom tags for CC recipients (p tags with "cc" marker)
+3. Adds event reference tags for threading (e tags for parent events)
+4. Adds NIP-05 tag if the sender has a NIP-05 identifier
+5. Adds the subject as a subject tag
+6. Creates a base event (kind 2024) with the message content
+7. Wraps the base event into gift-wrapped events (NIP-59) for each recipient
+8. Returns a HashMap where keys are recipient public keys and values are gift-wrapped events
+
+<Note>
+  Gift-wrapped events provide privacy by encrypting the message content and obscuring metadata. Each recipient receives their own individually encrypted copy.
+</Note>
+
+## Example usage
+
+```rust
+use nostr::{Keys, PublicKey};
+use hoot::mail_event::MailMessage;
+
+// Create a new message
+let mut message = MailMessage {
+    id: None,
+    created_at: None,
+    author: None,
+    to: vec![recipient_pubkey],
+    cc: vec![],
+    bcc: vec![],
+    parent_events: None,
+    subject: "Hello from Hoot".to_string(),
+    content: "This is a test message.".to_string(),
+    sender_nip05: Some("sender@example.com".to_string()),
+};
+
+// Convert to gift-wrapped events
+let sending_keys = Keys::generate();
+let events = message.to_events(&sending_keys);
+
+// Send each event to relays
+for (recipient, event) in events {
+    // Send event to relay pool
+    relay_pool.send(event)?;
+}
+```
+
+## Constants
+
+<ParamField path="MAIL_EVENT_KIND" type="u16">
+  The custom Nostr event kind used for mail messages: `2024`
+</ParamField>
+
+## Threading behavior
+
+Messages can be threaded by including parent event IDs in the `parent_events` field. When a message is a reply:
+
+1. Set `parent_events` to include the ID(s) of the message(s) being replied to
+2. The `to_events()` method automatically adds e tags for each parent event
+3. These tags allow the database to reconstruct conversation threads using recursive queries
+
+```rust
+// Create a reply to an existing message
+let mut reply = MailMessage {
+    parent_events: Some(vec![original_message_id]),
+    subject: "Re: Hello from Hoot".to_string(),
+    content: "Thanks for your message!".to_string(),
+    to: vec![original_sender],
+    // ... other fields
+};
+```
+
+## Related
+
+- [RelayPool](/api/relay-pool) - For sending events to Nostr relays
+- [AccountManager](/api/account-manager) - For managing keys and unwrapping received messages
+- [Database](/api/database) - For storing and retrieving messages

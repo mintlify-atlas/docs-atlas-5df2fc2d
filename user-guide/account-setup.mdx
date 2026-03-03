@@ -1,0 +1,161 @@
+---
+title: Account setup
+description: Create a new Nostr identity or import an existing account
+---
+
+When you first launch Hoot, you'll need to set up your account. Hoot uses the Nostr protocol, which means your identity is based on cryptographic keys rather than traditional usernames and passwords.
+
+## First launch
+
+On first launch, Hoot will guide you through the onboarding process.
+
+<Steps>
+  <Step title="Welcome screen">
+    You'll see the welcome screen with a "Get Started" button. Click it to begin setup.
+  </Step>
+
+  <Step title="Database encryption">
+    Hoot stores all your messages and data in an encrypted local SQLite database. You'll be prompted to set a password to encrypt this database.
+
+    <Info>
+    This password protects your local data. If you forget it, you won't be able to access your stored messages. However, your Nostr identity is stored separately in your system keychain and can be imported elsewhere.
+    </Info>
+
+    - Enter a strong password (minimum 4 characters)
+    - Confirm your password by entering it again
+    - Password strength is indicated as Weak, Fair, or Strong
+
+    Click "Continue" once both passwords match.
+  </Step>
+
+  <Step title="Choose your setup method">
+    Hoot offers two ways to set up your account:
+
+    - **Generate New Identity**: Create a fresh Nostr keypair for Hoot Mail
+    - **Import Existing Key**: Use your existing Nostr private key (nsec)
+  </Step>
+</Steps>
+
+## Generate a new identity
+
+If you're new to Nostr or want a dedicated identity for Hoot:
+
+<Steps>
+  <Step title="Select 'Generate New Keypair'">
+    Click the "Generate New Keypair" button. Hoot will automatically generate a new cryptographic keypair for you.
+  </Step>
+
+  <Step title="Set up your profile (optional)">
+    Customize how you appear to others:
+
+    - **Display Name**: Your friendly name (e.g., "Alice Smith")
+    - **Username**: Your handle (e.g., "@alice")
+    - **Picture URL**: URL to your profile picture (optional, advanced)
+
+    <Note>
+    You can skip profile setup and configure it later in Settings.
+    </Note>
+  </Step>
+
+  <Step title="View your public key">
+    Expand the "Your Public Key" section to see your npub (Nostr public key). This is your identity on the Nostr network and is safe to share with others.
+  </Step>
+
+  <Step title="Publish metadata">
+    Check "Publish profile to Nostr relays" if you want your profile information to be publicly available on the Nostr network. This allows others to find you and see your profile information.
+
+    Click "Finish" to complete setup or "Skip Profile" to proceed without publishing metadata.
+  </Step>
+</Steps>
+
+<Warning>
+Your private key (nsec) is stored securely in your system keychain. Never share your private key with anyone. Anyone with access to your private key can impersonate you and read your messages.
+</Warning>
+
+## Import an existing key
+
+If you already have a Nostr identity:
+
+<Steps>
+  <Step title="Select 'Import Private Key'">
+    Click the "Import Private Key" button on the account creation screen.
+  </Step>
+
+  <Step title="Enter your private key">
+    Enter your Nostr private key in the text field. Your private key should be in nsec format (starting with `nsec1...`).
+
+    <Info>
+    The input field shows dots to protect your private key from shoulder surfing. Hoot validates the format in real-time and displays "Valid nsec format" when correct.
+    </Info>
+
+    Click "Continue" once your key is validated.
+  </Step>
+
+  <Step title="Profile information">
+    If you've used this key before on Nostr, Hoot will automatically fetch and prefill your profile information (display name, username, and picture) from the network.
+
+    You can modify this information or leave it as-is.
+  </Step>
+
+  <Step title="Finish setup">
+    Click "Finish" to complete setup or "Skip Profile" if you don't want to publish updated metadata.
+  </Step>
+</Steps>
+
+## Database unlock
+
+If you've previously set up Hoot and the database file already exists, you'll be prompted to unlock the database with your password instead of creating a new one.
+
+<Steps>
+  <Step title="Enter your database password">
+    Enter the password you created during initial setup.
+  </Step>
+
+  <Step title="Unlock">
+    Click "Unlock" to access your data. If you enter an incorrect password, you'll see an error message.
+  </Step>
+</Steps>
+
+## Key storage and security
+
+Hoot uses platform-specific secure storage for your private keys:
+
+- **Linux**: Secret Service API (GNOME Keyring, KWallet) with file-based fallback
+- **macOS**: Keychain API
+- **Windows**: Credential Manager
+
+Your private keys never leave your device and are never transmitted over the network.
+
+## Understanding Nostr keys
+
+### Public key (npub)
+
+Your public key is your identity on Nostr. It starts with `npub1...` and can be safely shared with anyone. People need your public key to:
+
+- Send you messages
+- Add you as a contact
+- View your profile
+
+### Private key (nsec)
+
+Your private key proves you own your identity. It starts with `nsec1...` and must be kept secret. With your private key, you can:
+
+- Sign messages as yourself
+- Decrypt messages sent to you
+- Use your identity on other Nostr clients
+
+<Warning>
+Never share your private key (nsec). Store it in a secure location as a backup. If you lose your private key and forget your database password, you may lose access to your identity.
+</Warning>
+
+## Managing multiple accounts
+
+Hoot supports multiple Nostr identities. After initial setup, you can add additional accounts from Settings.
+
+## Next steps
+
+After setting up your account:
+
+- Add [contacts](/user-guide/contacts) to connect with others
+- Configure [settings](/user-guide/settings) like relays and profile information
+- Start [sending messages](/user-guide/sending-messages)

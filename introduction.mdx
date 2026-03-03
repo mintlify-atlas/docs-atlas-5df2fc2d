@@ -1,0 +1,89 @@
+---
+title: Introduction
+description: Hoot is a secure desktop email client built on the Nostr protocol, providing email-like functionality with native GUI for sending messages, managing contacts, and viewing profiles.
+---
+
+# Welcome to Hoot
+
+Hoot is a native desktop email/messaging client built on the Nostr protocol using Rust and egui. It provides familiar email functionality over a decentralized protocol, featuring a modern interface for private communication.
+
+<Note>
+  Hoot uses NIP-59 (gift wrap) for all private messages, ensuring end-to-end encryption for your communications.
+</Note>
+
+## Why Hoot?
+
+Hoot combines the familiar experience of traditional email clients with the benefits of the Nostr protocol:
+
+- **Decentralized**: No central authority controls your messages
+- **Private**: End-to-end encryption using NIP-59 gift wrapping
+- **Secure**: Platform-specific secure key storage (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux)
+- **Native**: Fast, lightweight desktop application built with Rust
+- **Open Protocol**: Built on Nostr, an open protocol with multiple relay options
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running with Hoot in minutes
+  </Card>
+  <Card
+    title="Features"
+    icon="stars"
+    href="/features"
+  >
+    Explore what Hoot can do for you
+  </Card>
+</CardGroup>
+
+## Core architecture
+
+Hoot is built with a modular architecture:
+
+- **Relay system**: Manages WebSocket connections to multiple Nostr relays with automatic reconnection (5s intervals) and keepalive pings (30s)
+- **Encrypted database**: SQLite with SQLCipher for local storage of messages and metadata
+- **Account manager**: Handles Nostr keypairs with platform-specific secure storage
+- **Mail events**: Custom kind 2024 events with to/cc/bcc, subject, and threading support
+
+<Info>
+  Hoot stores your data locally in a SQLite database with SQLCipher encryption, giving you full control over your messages.
+</Info>
+
+## Technical specifications
+
+- **Language**: Rust (edition 2021)
+- **GUI Framework**: egui (immediate-mode GUI)
+- **Protocol**: Nostr protocol v0.37.0
+- **Database**: SQLite with bundled SQLCipher
+- **Supported Platforms**: Linux, macOS, Windows
+
+## Open source
+
+Hoot is open source software created by Jack Chakany. Contributions are welcome!
+
+<CardGroup cols={2}>
+  <Card
+    title="Build from source"
+    icon="code"
+  >
+    ```bash
+    git clone <repository-url>
+    cd hoot
+    cargo build --release
+    cargo run --release
+    ```
+  </Card>
+  <Card
+    title="Development build"
+    icon="terminal"
+  >
+    ```bash
+    cargo build
+    cargo run
+    ```
+  </Card>
+</CardGroup>

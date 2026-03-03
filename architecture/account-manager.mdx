@@ -1,0 +1,273 @@
+---
+title: Account manager
+description: Nostr key management, gift wrap decryption, and secure storage integration
+---
+
+The AccountManager handles Nostr keypair management, gift wrap unwrapping, and integration with platform-specific secure storage.
+
+## Core structure
+
+```rust
+pub struct AccountManager {
+    pub loaded_keys: Vec<Keys>,
+}
+```
+
+The AccountManager:
+- Maintains all loaded Nostr keypairs in memory
+- Coordinates between database (public keys) and keystore (private keys)
+- Handles gift wrap decryption for private messages
+- Supports multiple accounts per user
+
+## Key management
+
+### Loading keys
+
+From src/account_manager.rs:88:
+```rust
+pub fn load_keys(&mut self, db: &Db) -> Result<Vec<Keys>> {
+    let db_saved_pubkeys = db.get_pubkeys()?;
+    let mut keypairs: Vec<Keys> = Vec::new();
+    for pubkey in db_saved_pubkeys {
+        let entry = match Entry::new(STORAGE_NAME, pubkey.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Couldn't create keying entry struct, skipping: {}", e);
+                continue;
+            }
+        };
+        let privkey = match entry.get_secret() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Couldn't get private key from keystore, skipping: {}", e);
+                continue;
+            }
+        };
+
+        let parsed_sk = match SecretKey::from_slice(&privkey) {
+            Ok(key) => key,
+            Err(e) => {
+                error!("Couldn't parse private key from keystore, skipping: {}", e);
+                continue;
+            }
+        };
+        keypairs.push(Keys::new(parsed_sk));
+    }
+    self.loaded_keys = keypairs.clone();
+
+    Ok(keypairs)
+}
+```
+
+Key loading process:
+1. Query database for all saved public keys
+2. For each public key, retrieve private key from platform keystore
+3. Parse private key bytes into `SecretKey`
+4. Create `Keys` object combining public and private keys
+5. Store all keys in `loaded_keys` vector
+
+Errors are logged but don't stop loading of other keys.
+
+### Generating new keys
+
+```rust
+pub fn generate_new_keys_and_save(&mut self, db: &Db) -> Result<Keys> {
+    let new_keypair = Keys::generate();
+
+    let entry = Entry::new(STORAGE_NAME, new_keypair.public_key().to_hex().as_ref())?;
+    entry.set_secret(new_keypair.secret_key().as_secret_bytes())?;
+
+    db.add_pubkey(new_keypair.public_key().to_hex())?;
+
+    self.loaded_keys.push(new_keypair.clone());
+
+    Ok(new_keypair)
+}
+```
+
+Key generation:
+1. Generate new random keypair using `nostr::Keys::generate()`
+2. Store private key in platform keystore using public key as identifier
+3. Store public key in database `pubkeys` table
+4. Add keys to in-memory `loaded_keys` vector
+
+### Saving existing keys
+
+```rust
+pub fn save_keys(&mut self, db: &Db, keys: &Keys) -> Result<()> {
+    let entry = Entry::new(STORAGE_NAME, keys.public_key().to_hex().as_ref())?;
+    entry.set_secret(keys.secret_key().as_secret_bytes())?;
+
+    db.add_pubkey(keys.public_key().to_hex())?;
+
+    self.loaded_keys.push(keys.clone());
+
+    Ok()
+}
+```
+
+Used when importing existing keys (e.g., from nsec string).
+
+### Deleting keys
+
+From src/account_manager.rs:121:
+```rust
+pub fn delete_key(&mut self, db: &Db, key: &Keys) -> Result<()> {
+    let pubkey = key.public_key().to_hex();
+    db.delete_pubkey(pubkey.clone()).with_context(|| {
+        format!("Tried to delete public key `{}` from pubkeys table", pubkey)
+    })?;
+    let entry = Entry::new(STORAGE_NAME, pubkey.as_ref()).with_context(|| {
+        format!("Couldn't to create keyring entry struct for pubkey `{}`", pubkey)
+    })?;
+    entry.delete_credential().with_context(|| {
+        format!("Tried to delete keyring entry for public key `{}`", pubkey)
+    })?;
+
+    if let Some(index) = self.loaded_keys.iter().position(|saved_keys| saved_keys.public_key() == key.public_key()) {
+        self.loaded_keys.remove(index);
+    }
+
+    Ok()
+}
+```
+
+Deletion removes:
+1. Public key from database
+2. Private key from platform keystore
+3. Keys from in-memory `loaded_keys` vector
+
+### Validating nsec input
+
+```rust
+pub fn validate_nsec(input: &str) -> Result<Keys, String> {
+    if input.is_empty() {
+        return Err("Please enter a private key".to_string());
+    }
+    use nostr::FromBech32;
+    match nostr::SecretKey::from_bech32(input) {
+        Ok(secret_key) => Ok(Keys::new(secret_key)),
+        Err(_) => Err("Invalid nsec format".to_string()),
+    }
+}
+```
+
+Used in UI to validate user input when importing keys.
+
+## Secure storage integration
+
+The AccountManager uses the `keyring` crate for platform-specific secure storage:
+
+- **Linux**: Secret Service API (libsecret) or file-based fallback
+- **macOS**: Keychain API via `security-framework` crate
+- **Windows**: Credential Manager
+
+Storage format:
+- **Service name**: `STORAGE_NAME` constant ("hoot")
+- **Username**: Public key in hex format
+- **Secret**: Raw 32-byte private key
+
+This separation keeps private keys out of the database and leverages OS-level security.
+
+## Gift wrap unwrapping
+
+The AccountManager handles decryption of NIP-59 gift-wrapped events:
+
+```rust
+pub fn unwrap_gift_wrap(&mut self, gift_wrap: &Event) -> Result<UnwrappedGift> {
+    let target_pubkey = gift_wrap
+        .tags
+        .iter()
+        .find(|tag| tag.kind() == "p".into())
+        .and_then(|tag| tag.content())
+        .with_context(|| {
+            format!("Could not find pubkey inside wrapped event `{}`", gift_wrap.id)
+        })?;
+
+    let target_key = self
+        .loaded_keys
+        .iter()
+        .find(|key| key.public_key().to_string() == *target_pubkey)
+        .with_context(|| {
+            format!("Could not find pubkey `{}` inside wrapped event `{}`", target_pubkey, gift_wrap.id)
+        })?;
+
+    let unwrapped = UnwrappedGift::from_gift_wrap(target_key, gift_wrap)
+        .block_on()
+        .context("Couldn't unwrap gift")?;
+
+    Ok(unwrapped)
+}
+```
+
+Unwrapping process:
+1. Extract recipient public key from gift wrap's `p` tag
+2. Find matching keypair in `loaded_keys`
+3. Decrypt gift wrap using NIP-59 protocol
+4. Return `UnwrappedGift` containing the inner rumor event
+
+The `UnwrappedGift` structure:
+```rust
+pub struct UnwrappedGift {
+    pub rumor: UnsignedEvent,  // The actual message content
+    pub sender: PublicKey,      // Verified sender public key
+}
+```
+
+Note: Uses `pollster::block_on()` to handle async decryption in sync context.
+
+## NIP-42 authentication
+
+From src/account_manager.rs:152:
+```rust
+pub fn create_auth_event(keys: &Keys, relay_url: &str, challenge: &str) -> Result<Event> {
+    use nostr::RelayUrl;
+
+    let relay_url_parsed = RelayUrl::parse(relay_url)
+        .map_err(|e| anyhow::anyhow!("Invalid relay URL: {}", e))?;
+
+    let event = EventBuilder::auth(challenge, relay_url_parsed)
+        .sign_with_keys(keys)
+        .map_err(|e| anyhow::anyhow!("Failed to sign auth event: {}", e))?;
+
+    Ok(event)
+}
+```
+
+Creates NIP-42 authentication events:
+- Takes keypair, relay URL, and challenge string
+- Builds kind 22242 auth event
+- Signs with provided keys
+- Returns ready-to-send event
+
+Used when relays send `AUTH` challenges requiring proof of identity.
+
+## Multi-account support
+
+The AccountManager supports multiple accounts:
+
+```rust
+pub loaded_keys: Vec<Keys>
+```
+
+- All accounts loaded simultaneously into memory
+- User can switch between accounts in UI
+- Each account has independent key storage
+- Gift wraps checked against all loaded keys
+- Separate profile metadata per account
+
+The application tracks the currently active account separately:
+```rust
+pub active_account: Option<nostr::Keys>
+```
+
+## Security considerations
+
+1. **Private key separation**: Private keys never stored in database
+2. **Platform keystore**: Leverages OS-level security features
+3. **In-memory only**: Keys loaded into RAM, cleared on exit
+4. **Encrypted database**: Database encrypted with user password
+5. **No key logging**: Private keys excluded from debug logs
+6. **Verification**: Gift wrap sender verified against seal signature
+
+The AccountManager provides a secure foundation for managing user identities while maintaining the flexibility to support multiple accounts.

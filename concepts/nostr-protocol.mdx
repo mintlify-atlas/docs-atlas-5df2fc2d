@@ -1,0 +1,120 @@
+---
+title: Nostr protocol
+description: Learn how Hoot uses the Nostr protocol for secure, decentralized email
+---
+
+Hoot is built on top of the Nostr protocol, a simple and open protocol for decentralized communication. Instead of relying on traditional email servers, Hoot uses Nostr's event-based architecture to send and receive messages.
+
+## What is Nostr?
+
+Nostr (Notes and Other Stuff Transmitted by Relays) is a decentralized protocol that enables censorship-resistant communication. At its core, Nostr consists of:
+
+- **Events**: Signed JSON objects that contain messages and data
+- **Relays**: WebSocket servers that store and forward events
+- **Keys**: Public/private keypairs for identity and encryption
+
+Unlike traditional email, there's no central authority. Users connect to multiple relays, and messages are distributed across the network.
+
+## Nostr events
+
+All data in Nostr is transmitted as events. Each event has:
+
+- **Kind**: A number indicating the event type
+- **Content**: The message or data payload
+- **Tags**: Metadata like recipients, parent messages, and subjects
+- **Signature**: Cryptographic proof of authenticity
+
+```rust
+// From src/mail_event.rs
+pub const MAIL_EVENT_KIND: u16 = 2024;
+```
+
+Common event kinds in the Nostr ecosystem include:
+
+- **Kind 0**: Profile metadata (name, avatar, bio)
+- **Kind 1**: Short text notes
+- **Kind 1059**: Gift-wrapped encrypted events
+- **Kind 2024**: Hoot mail messages (custom)
+
+## Custom kind 2024 for mail
+
+Hoot uses a custom event kind (2024) specifically designed for email-like messages. These events include:
+
+- **To/CC/BCC recipients**: Specified using `p` tags
+- **Subject**: Stored in a subject tag
+- **Threading**: Parent event IDs for conversation threads
+- **NIP-05 identifiers**: Optional sender verification
+
+```rust
+// From src/mail_event.rs:23-69
+pub struct MailMessage {
+    pub to: Vec<PublicKey>,
+    pub cc: Vec<PublicKey>,
+    pub bcc: Vec<PublicKey>,
+    pub parent_events: Option<Vec<EventId>>,
+    pub subject: String,
+    pub content: String,
+    pub sender_nip05: Option<String>,
+}
+```
+
+<Note>
+Kind 2024 events are never sent in plain text. They are always wrapped using NIP-59 gift wrapping before being sent to relays.
+</Note>
+
+### How mail events are structured
+
+When composing a message, Hoot creates a kind 2024 event with:
+
+1. **P tags**: One for each recipient in the To field
+2. **P tags with "cc" marker**: For CC recipients  
+3. **E tags**: References to parent events for threading
+4. **Subject tag**: The email subject line
+5. **Content**: The message body
+
+From `src/mail_event.rs:28-38`:
+
+```rust
+for pubkey in &self.to {
+    tags.push(Tag::public_key(*pubkey));
+}
+
+for pubkey in &self.cc {
+    tags.push(Tag::custom(
+        TagKind::p(),
+        vec![pubkey.to_hex().as_str(), "cc"],
+    ));
+}
+```
+
+## Event verification
+
+Every event received from relays is cryptographically verified before processing. From `src/event_processing.rs:295-298`:
+
+```rust
+if event.verify().is_err() {
+    error!("Event verification failed for event: {}", event.id);
+    return;
+}
+```
+
+This ensures that:
+
+- The event was signed by the claimed public key
+- The content hasn't been tampered with
+- The event ID correctly represents the event data
+
+<Info>
+Event verification happens automatically for all incoming messages. Invalid events are rejected and never stored in the database.
+</Info>
+
+## Profile metadata events
+
+Hoot uses standard Nostr kind 0 events for contact profiles. These events contain:
+
+- Display name
+- Avatar image URL
+- Bio/about text
+- NIP-05 identifier (for verification)
+
+Profile metadata is cached locally and updated whenever newer metadata events are received from relays.
