@@ -37,6 +37,8 @@
               "user-guide/installation",
               "user-guide/account-setup",
               "user-guide/sending-messages",
+              "user-guide/managing-messages",
+              "user-guide/thread-view",
               "user-guide/contacts",
               "user-guide/settings"
             ]

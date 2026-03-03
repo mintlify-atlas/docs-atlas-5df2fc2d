@@ -1,0 +1,176 @@
+---
+title: Managing messages
+description: Learn how to organize your inbox, search messages, and use folders like trash, junk, and requests.
+---
+
+# Managing messages
+
+Hoot provides several features to help you organize and manage your messages effectively.
+
+## Inbox
+
+Your inbox displays all received messages from allowed senders. Messages are shown in a table format with:
+
+- **Sender** - Display name or Nostr public key
+- **Subject** - Message subject line
+- **Date** - When the message was received
+- **Thread count** - Number of messages in the conversation
+
+Click any message to open it in the thread view and see the full conversation.
+
+## Search
+
+Hoot includes a powerful search feature to find messages quickly.
+
+### Using search
+
+1. Type your query in the search bar at the top of the window
+2. Search is debounced by 150ms for performance
+3. See live suggestions as you type (up to 8 results)
+4. Press **Enter** to see full search results
+5. Click any suggestion to jump directly to that message
+
+```rust
+// From search.rs:5-6
+const DEBOUNCE_MS: u64 = 150;
+const MAX_SUGGESTIONS: usize = 8;
+```
+
+### Search behavior
+
+- Search looks through message subjects and content
+- Results update automatically as you type
+- Use keyboard navigation (up/down arrows) to select suggestions
+- Clear search with the × button
+- Empty searches return you to the inbox
+
+<Tip>
+  Search is optimized with debouncing - it waits 150ms after you stop typing before executing the query to avoid performance issues.
+</Tip>
+
+## Message requests
+
+Messages from unknown senders (not in your contacts) appear in the **Requests** folder. This helps you control who can reach your inbox.
+
+### Managing requests
+
+<Steps>
+  <Step title="View requests">
+    Navigate to the **Requests** page from the sidebar to see messages from unknown senders.
+  </Step>
+  
+  <Step title="Accept or reject">
+    For each request, you can:
+    - **Accept** - Moves the sender to "Allowed" status and the message to your inbox
+    - **Reject** - Moves the sender to "Junked" status
+  </Step>
+  
+  <Step title="Refresh">
+    Click the **Refresh** button to check for new message requests.
+  </Step>
+</Steps>
+
+```rust
+// From requests.rs:38-39
+let mut to_accept: Option<String> = None;
+let mut to_reject: Option<String> = None;
+```
+
+<Info>
+  The requests system uses a sender status database to track which senders are allowed, junked, or unknown. See [Contacts](/user-guide/contacts) for more on managing sender status.
+</Info>
+
+## Junk
+
+Messages from blocked senders are automatically filtered to the **Junk** folder.
+
+### Unblocking senders
+
+1. Navigate to the **Junk** folder from the sidebar
+2. Find the sender you want to unblock
+3. Click **Unblock** to change their status from "Junked" to "Unknown"
+4. Future messages will appear in **Requests** instead of **Junk**
+
+```rust
+// From junk.rs:37
+let mut to_unblock: Option<String> = None;
+```
+
+<Warning>
+  Junked messages remain accessible in the Junk folder but won't appear in your inbox. Unblocking a sender doesn't automatically move their old messages.
+</Warning>
+
+## Trash
+
+Deleted messages are moved to the **Trash** folder where they can be restored or permanently deleted.
+
+### Using trash
+
+<Steps>
+  <Step title="Delete a message">
+    In any message view, delete the message to move it to trash. The message is recorded in the database but hidden from normal views.
+  </Step>
+  
+  <Step title="Restore from trash">
+    Navigate to **Trash**, find the message, and click **Restore** to return it to your inbox.
+  </Step>
+  
+  <Step title="Permanently delete">
+    Click **Delete** in the trash view to permanently remove the message. This creates a Nostr deletion event.
+  </Step>
+  
+  <Step title="Auto-purge">
+    Trash is automatically purged after 30 days. Messages older than this are permanently deleted.
+  </Step>
+</Steps>
+
+```rust
+// From trash.rs:38-39
+let mut to_restore: Option<String> = None;
+let mut to_delete: Option<String> = None;
+```
+
+<Info>
+  The trash system uses Nostr deletion events (kind 5) to mark messages as deleted. These events are broadcasted to relays when you permanently delete a message.
+</Info>
+
+## Drafts
+
+Drafts are automatically saved when you compose messages, allowing you to return to them later.
+
+### Working with drafts
+
+1. **Auto-save** - Drafts are saved automatically as you compose
+2. **View drafts** - Navigate to the **Drafts** folder to see all saved drafts
+3. **Resume editing** - Click a draft to open it in the compose window
+4. **Delete drafts** - Remove drafts you no longer need
+
+The drafts table shows:
+- Subject
+- Recipients (To field)
+- Last modified time
+- Actions (edit/delete)
+
+```rust
+// From drafts_page.rs:37-38
+let mut draft_to_delete: Option<i64> = None;
+let mut draft_to_open: Option<db::Draft> = None;
+```
+
+<Note>
+  Drafts are stored in the local encrypted database and are never sent to relays until you explicitly send the message.
+</Note>
+
+## Refresh buttons
+
+Each message view (Inbox, Requests, Junk, Trash, Drafts) has a **Refresh** button to reload the message list from the database. Use this to:
+
+- Check for new messages received via relays
+- Update after making changes in another window
+- Ensure you're seeing the latest state
+
+## Next steps
+
+- Learn about [thread views](/user-guide/thread-view) for reading conversations
+- Manage your [contacts](/user-guide/contacts) to control inbox access
+- Configure [settings](/user-guide/settings) like relays and profile information

@@ -1,0 +1,165 @@
+---
+title: Thread view
+description: View and navigate message threads with full conversation history and reply functionality.
+---
+
+# Thread view
+
+The thread view displays complete message conversations, showing all replies and maintaining context throughout the discussion.
+
+## Opening threads
+
+Click any message in your inbox, requests, junk, or search results to open it in thread view. The view shows:
+
+- Full message history
+- Sender information with profile metadata
+- Timestamps for each message
+- Reply options
+
+## Thread structure
+
+Hoot uses parent event references to build conversation threads:
+
+```rust
+// From mail_event.rs:41-45
+if let Some(parentEvents) = &self.parent_events {
+    for event in parentEvents {
+        tags.push(Tag::event(*event));
+    }
+}
+```
+
+Threads are reconstructed using recursive database queries that walk both parent and child references:
+
+```rust
+// From CLAUDE.md:70
+// Thread reconstruction via recursive CTEs in `get_email_thread()`
+```
+
+<Info>
+  Thread reconstruction uses recursive Common Table Expressions (CTEs) in SQLite to efficiently build the complete conversation tree from the database.
+</Info>
+
+## Viewing message details
+
+Each message in the thread shows:
+
+### Sender information
+
+- Display name (from Nostr metadata)
+- NIP-05 identifier if configured
+- Profile picture (loaded asynchronously)
+- Public key (hex or npub format)
+
+### Message metadata
+
+- **Subject** - Only shown on the first message in a thread
+- **Timestamp** - When the message was created
+- **Recipients** - To/CC fields
+- **Thread depth** - How deep in the conversation
+
+### Message content
+
+- Full message body
+- Formatted text (preserving line breaks)
+- Option to view raw Nostr event
+
+## Replying to messages
+
+From the thread view, you can reply to any message:
+
+<Steps>
+  <Step title="Click Reply">
+    Click the **Reply** button on the message you want to respond to.
+  </Step>
+  
+  <Step title="Compose your reply">
+    A compose window opens with:
+    - Original sender in the "To" field
+    - Original subject prefixed with "Re:"
+    - Parent event reference for threading
+  </Step>
+  
+  <Step title="Send">
+    Write your reply and click **Send**. Your message will be linked to the parent message.
+  </Step>
+</Steps>
+
+```rust
+// From mail_event.rs:16
+pub parent_events: Option<Vec<EventId>>,
+```
+
+<Tip>
+  Parent event references ensure replies stay connected to the conversation, allowing Hoot to reconstruct the full thread from the database.
+</Tip>
+
+## Thread actions
+
+### Trash a thread
+
+Deleting a message from thread view moves it to trash. If it's the root message of a thread, the entire thread structure is preserved - child messages remain linked.
+
+### View sender profile
+
+Click the sender's name or avatar to:
+- View their full Nostr profile metadata
+- See their NIP-05 identifier (if configured)
+- Add them to contacts
+- Change their sender status (allow/junk)
+
+## Navigation
+
+- **Back** button returns to the previous view (inbox, search results, etc.)
+- **← / →** arrows navigate between messages in the current list
+- **Esc** key closes the thread view
+
+## Performance considerations
+
+Thread views are optimized for performance:
+
+### Profile loading
+
+```rust
+// From CLAUDE.md:108
+// Contact images fetched asynchronously via background threads with caching
+```
+
+Profile pictures and metadata are:
+- Loaded asynchronously in background threads
+- Cached in memory after first load
+- Persisted to the database for offline access
+
+### Message rendering
+
+The immediate-mode GUI updates only when necessary:
+- Changes trigger repaints via wake-up callbacks
+- Efficient text rendering with egui
+- No unnecessary re-renders
+
+<Info>
+  Hoot uses egui's immediate-mode architecture, which means the UI is redrawn every frame but only updates when data changes.
+</Info>
+
+## Message verification
+
+All messages in thread view are cryptographically verified:
+
+1. **Signature verification** - Nostr events are verified against the sender's public key
+2. **Gift wrap decryption** - Encrypted messages are unwrapped and validated
+3. **Duplicate detection** - Messages are deduplicated by event ID
+
+```rust
+// From CLAUDE.md:95
+// Event verification → duplicate check → store in DB
+```
+
+<Warning>
+  Messages that fail signature verification are not displayed. This protects against forged or corrupted messages.
+</Warning>
+
+## Next steps
+
+- Learn about [sending messages](/user-guide/sending-messages) and composing replies
+- Understand [message threading](/concepts/nostr-protocol#threading) in the Nostr protocol
+- Explore [contact management](/user-guide/contacts) for organizing senders
