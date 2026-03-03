@@ -1,0 +1,117 @@
+{
+  "projectType": "saas",
+  "projectName": "Hoot",
+  "projectDescription": "A secure desktop email client built on the Nostr protocol with end-to-end encryption",
+  "theme": "aspen",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#5B21B6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "features"
+            ]
+          },
+          {
+            "group": "User Guide",
+            "pages": [
+              "user-guide/installation",
+              "user-guide/account-setup",
+              "user-guide/sending-messages",
+              "user-guide/contacts",
+              "user-guide/settings"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/nostr-protocol",
+              "concepts/encryption",
+              "concepts/relays"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "architecture/overview",
+              "architecture/application-structure"
+            ]
+          },
+          {
+            "group": "Components",
+            "pages": [
+              "architecture/relay-system",
+              "architecture/database",
+              "architecture/account-manager",
+              "architecture/mail-events",
+              "architecture/ui-system"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "architecture/encryption",
+              "architecture/key-storage"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Development",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "development/building",
+              "development/contributing",
+              "development/profiling"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/mail-message",
+              "api/relay-pool",
+              "api/account-manager",
+              "api/database"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "End-to-end encrypted messaging using NIP-59 gift wrapping",
+    "Multi-account support with secure platform-native key storage",
+    "Email-like interface with threads, contacts, and drafts",
+    "Decentralized communication via Nostr relay network",
+    "Encrypted local database using SQLCipher",
+    "Cross-platform desktop application (Linux, macOS, Windows)",
+    "NIP-05 verification for identity management",
+    "Profile metadata with contact management"
+  ],
+  "publicApiSurface": [
+    "MailMessage::to_events()",
+    "RelayPool::add_subscription()",
+    "RelayPool::send()",
+    "AccountManager::unwrap_gift_wrap()",
+    "AccountManager::generate_new_keys_and_save()",
+    "Db::store_event()",
+    "Db::get_email_thread()",
+    "Db::get_contacts()",
+    "Hoot::new()",
+    "validate_nsec()"
+  ]
+}
